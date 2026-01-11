@@ -1,0 +1,40 @@
+name: DNS Guard - Security Analysis
+on:
+  workflow_dispatch:
+    inputs:
+      domain:
+        description: 'Domain to analyze'
+        required: true
+      client_name:
+        description: 'Client name'
+        required: true
+      enable_subdomains:
+        description: 'Enable subdomain enumeration'
+        default: true
+        type: boolean
+      enable_threat_intel:
+        description: 'Enable threat intelligence'
+        default: true
+        type: boolean
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11', cache: 'pip'}
+      - run: pip install -r requirements.txt
+      - name: Run Analysis
+        env:
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
+        run: |
+          mkdir -p reports
+          CMD="python src/cli.py -d '${{ inputs.domain }}' -c '${{ inputs.client_name }}' -o ./reports"
+          [ "${{ inputs.enable_subdomains }}" = "true" ] && CMD="$CMD -s"
+          [ "${{ inputs.enable_threat_intel }}" = "true" ] && CMD="$CMD -t -g"
+          eval $CMD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dnsguard-${{ inputs.domain }}
+          path: reports/
