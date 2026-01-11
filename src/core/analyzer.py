@@ -76,7 +76,8 @@ class DNSSECStatus:
 
 @dataclass
 class SubdomainResult:
-    subdomain:str;ip_addresses:List[str]=field(default_factory=list);cnames:List[str]=field(default_factory=list);source:str="enumeration"
+    is_alive:bool=True;
+    subdomain:str;is_alive:bool=True;ip_addresses:List[str]=field(default_factory=list);cnames:List[str]=field(default_factory=list);source:str="enumeration"
     def to_dict(self)->Dict:return asdict(self)
 
 @dataclass
