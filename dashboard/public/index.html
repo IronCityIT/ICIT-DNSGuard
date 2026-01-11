@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Iron City DNS Guard</title>
+<style>
+:root{--bg:#0f1419;--card:#1a1f2e;--input:#242938;--border:#2d3548;--gold:#d4af37;--text:#e8e8e8;--muted:#8b949e;--critical:#ff4757;--high:#ff6b35;--medium:#ffa502;--low:#2ed573;--info:#54a0ff}
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+.header{background:linear-gradient(135deg,var(--card),#1e2538);border-bottom:2px solid var(--gold);padding:20px 0;position:sticky;top:0;z-index:100}
+.header h1{color:var(--gold);font-size:1.4rem;letter-spacing:2px}.header .sub{color:var(--muted);font-size:.7rem}
+.section{background:var(--card);border-radius:16px;padding:25px;margin:20px 0;border:1px solid var(--border)}
+.section h2{color:var(--gold);margin-bottom:15px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px}
+.form-group label{display:block;margin-bottom:6px;color:var(--muted);font-size:.85rem}
+.form-group input,.form-group select,.form-group textarea{width:100%;padding:12px;background:var(--input);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:1rem}
+.form-group input:focus,.form-group select:focus{outline:none;border-color:var(--gold)}
+.btn{padding:12px 24px;border-radius:8px;font-weight:600;cursor:pointer;border:none;font-size:1rem;transition:.2s}
+.btn-primary{background:linear-gradient(135deg,var(--gold),#b8960c);color:#000}.btn-primary:hover{transform:translateY(-2px)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-secondary{background:var(--input);color:var(--text);border:1px solid var(--border)}
+.btn-group{display:flex;gap:10px;margin-top:15px;flex-wrap:wrap}
+.checkbox-group{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px}
+.checkbox-item{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--input);border-radius:6px}
+.checkbox-item input{width:auto}
+.results{display:none}.results.active{display:block}
+.risk-card{text-align:center;padding:30px;background:linear-gradient(135deg,var(--input),var(--card));border-radius:16px;margin-bottom:20px}
+.risk-score{width:120px;height:120px;border-radius:50%;margin:0 auto 15px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:2.5rem;font-weight:bold;color:#fff}
+.risk-score.low{background:var(--low)}.risk-score.medium{background:var(--medium)}.risk-score.high{background:var(--high)}.risk-score.critical{background:var(--critical)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:10px;margin:15px 0}
+.stat{background:var(--input);border-radius:10px;padding:15px;text-align:center}
+.stat-val{font-size:1.5rem;font-weight:bold;color:var(--gold)}.stat-lbl{font-size:.7rem;color:var(--muted)}
+.grade{display:inline-block;padding:5px 15px;border-radius:6px;font-weight:bold}
+.grade-A{background:var(--low);color:#000}.grade-B{background:#7bed9f;color:#000}.grade-C{background:var(--medium);color:#000}.grade-F{background:var(--critical);color:#fff}
+.tabs{display:flex;gap:5px;border-bottom:1px solid var(--border);margin-bottom:15px;flex-wrap:wrap}
+.tab{padding:10px 16px;background:transparent;border:none;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent}
+.tab:hover{color:var(--text)}.tab.active{color:var(--gold);border-bottom-color:var(--gold)}
+.tab-content{display:none}.tab-content.active{display:block}
+table{width:100%;border-collapse:collapse;margin-top:10px}th,td{padding:10px;text-align:left;border-bottom:1px solid var(--border)}
+th{background:var(--input);color:var(--gold);font-size:.8rem}
+.badge{display:inline-block;padding:3px 8px;border-radius:12px;font-size:.7rem;font-weight:600}
+.badge-valid{background:rgba(46,213,115,.15);color:var(--low)}.badge-critical{background:var(--critical);color:#fff}
+.finding{background:var(--input);border-radius:8px;padding:12px;margin-bottom:8px;border-left:3px solid var(--border)}
+.finding.critical{border-left-color:var(--critical)}.finding.high{border-left-color:var(--high)}.finding.medium{border-left-color:var(--medium)}.finding.low{border-left-color:var(--low)}
+.finding-head{display:flex;justify-content:space-between;margin-bottom:5px}.finding-cat{font-weight:600}
+.finding-rec{margin-top:8px;padding:8px;background:rgba(212,175,55,.1);border-radius:4px;font-size:.85rem}
+.loading{display:none;text-align:center;padding:40px}.loading.active{display:block}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 15px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.console{background:#000;border-radius:6px;padding:12px;font-family:monospace;font-size:.75rem;max-height:150px;overflow-y:auto;margin-top:15px}
+.console-line{margin-bottom:3px}.console-line.info{color:var(--info)}.console-line.success{color:var(--low)}.console-line.error{color:var(--critical)}
+.footer{text-align:center;padding:30px;color:var(--muted);font-size:.8rem}
+</style>
+</head>
+<body>
+<header class="header"><div class="container"><h1>🛡️ IRON CITY <span style="color:var(--text)">DNS GUARD</span></h1><p class="sub">ADVANCED DNS SECURITY ANALYSIS</p></div></header>
+<main class="container">
+<section class="section">
+<h2>🔍 New Scan</h2>
+<form id="scanForm" onsubmit="startScan(event)">
+<div class="grid">
+<div class="form-group"><label>Domain(s)</label><textarea id="domains" rows="2" placeholder="example.com" required></textarea></div>
+<div class="form-group"><label>Client Name</label><input type="text" id="clientName" placeholder="Acme Corp" required></div>
+<div class="form-group"><label>Scan Type</label><select id="scanType"><option value="full">Full Analysis</option><option value="quick">Quick Scan</option></select></div>
+</div>
+<div class="checkbox-group">
+<label class="checkbox-item"><input type="checkbox" id="optThreat" checked><span>🔒 Threat Intel</span></label>
+<label class="checkbox-item"><input type="checkbox" id="optSubs" checked><span>🌐 Subdomains</span></label>
+<label class="checkbox-item"><input type="checkbox" id="optPerf"><span>⚡ Performance</span></label>
+<label class="checkbox-item"><input type="checkbox" id="optGeo" checked><span>🌍 Geolocation</span></label>
+</div>
+<div class="btn-group">
+<button type="submit" class="btn btn-primary" id="scanBtn">🚀 Start Analysis</button>
+<button type="button" class="btn btn-secondary" onclick="loadSample()">📊 Demo</button>
+</div>
+</form>
+</section>
+<div class="loading" id="loading"><div class="spinner"></div><p>Analyzing...</p><div class="console" id="console"></div></div>
+<section class="section results" id="results">
+<div class="tabs">
+<button class="tab active" onclick="showTab('overview')">📊 Overview</button>
+<button class="tab" onclick="showTab('records')">📝 Records</button>
+<button class="tab" onclick="showTab('email')">📧 Email</button>
+<button class="tab" onclick="showTab('findings')">⚠️ Findings</button>
+<button class="tab" onclick="showTab('subs')">🌐 Subdomains</button>
+</div>
+<div class="tab-content active" id="tab-overview">
+<div class="risk-card"><div class="risk-score" id="riskScore"><span id="riskVal">--</span></div><h3 id="domainTitle">Domain</h3><p id="scanTime" style="color:var(--muted);margin-top:8px"></p></div>
+<div class="stats">
+<div class="stat"><div class="stat-val" id="statRec">--</div><div class="stat-lbl">Records</div></div>
+<div class="stat"><div class="stat-val" id="statAnom">--</div><div class="stat-lbl">Anomalies</div></div>
+<div class="stat"><div class="stat-val" id="statThreat">--</div><div class="stat-lbl">Threats</div></div>
+<div class="stat"><div class="stat-val" id="statSubs">--</div><div class="stat-lbl">Subdomains</div></div>
+<div class="stat"><div class="stat-val"><span id="emailGrade" class="grade">--</span></div><div class="stat-lbl">Email</div></div>
+<div class="stat"><div class="stat-val" id="statDNSSEC">--</div><div class="stat-lbl">DNSSEC</div></div>
+</div>
+<div class="btn-group" style="justify-content:center"><button class="btn btn-primary" onclick="downloadJSON()">📥 Export JSON</button></div>
+</div>
+<div class="tab-content" id="tab-records"><h3>DNS Records</h3><table id="recTable"><thead><tr><th>Type</th><th>Value</th><th>TTL</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+<div class="tab-content" id="tab-email"><h3>Email Security</h3><div class="stats"><div class="stat"><div class="stat-val" id="spf">--</div><div class="stat-lbl">SPF</div></div><div class="stat"><div class="stat-val" id="dkim">--</div><div class="stat-lbl">DKIM</div></div><div class="stat"><div class="stat-val" id="dmarc">--</div><div class="stat-lbl">DMARC</div></div></div><div id="emailDetail"></div></div>
+<div class="tab-content" id="tab-findings"><h3>Findings</h3><div id="findingsList"></div></div>
+<div class="tab-content" id="tab-subs"><h3>Subdomains</h3><table id="subsTable"><thead><tr><th>Subdomain</th><th>IP</th><th>Source</th></tr></thead><tbody></tbody></table></div>
+</section>
+</main>
+<footer class="footer">© 2025 Iron City IT Advisors | DNS Guard v3.0</footer>
+<script>
+let data=null;const API=window.location.hostname==='localhost'?'http://localhost:8000/api':'/api';
+async function startScan(e){e.preventDefault();const domains=document.getElementById('domains').value.trim().split('\n').filter(d=>d);
+if(!domains.length)return alert('Enter domain');document.getElementById('scanBtn').disabled=true;
+document.getElementById('loading').classList.add('active');document.getElementById('results').classList.remove('active');
+clearConsole();log('info','Starting...');
+try{const r=await fetch(`${API}/scan`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({domains,client_name:document.getElementById('clientName').value,scan_type:document.getElementById('scanType').value,options:{threat_intel:document.getElementById('optThreat').checked,subdomains:document.getElementById('optSubs').checked,performance:document.getElementById('optPerf').checked,geolocation:document.getElementById('optGeo').checked}})});
+if(!r.ok)throw new Error('API error');data=await r.json();log('success','Done!');showResults(data);}catch(err){log('error',err.message);loadSample();}
+document.getElementById('scanBtn').disabled=false;document.getElementById('loading').classList.remove('active');}
+function showResults(d){data=d;document.getElementById('results').classList.add('active');const s=d.overall_risk_score||0;
+document.getElementById('riskVal').textContent=s;document.getElementById('riskScore').className='risk-score '+(s>=80?'low':s>=60?'medium':s>=40?'high':'critical');
+document.getElementById('domainTitle').textContent=d.domain||'Domain';document.getElementById('scanTime').textContent=d.scan_timestamp?'Scanned: '+new Date(d.scan_timestamp).toLocaleString():'';
+document.getElementById('statRec').textContent=d.records?.length||0;document.getElementById('statAnom').textContent=d.records?.filter(r=>r.is_anomaly).length||0;
+document.getElementById('statThreat').textContent=d.threat_intel?.filter(t=>t.is_malicious).length||0;document.getElementById('statSubs').textContent=d.subdomains?.length||0;
+const g=d.email_security?.grade||'F';const ge=document.getElementById('emailGrade');ge.textContent=g;ge.className='grade grade-'+g.charAt(0);
+document.getElementById('statDNSSEC').textContent=d.dnssec?.implemented?'✅':'❌';
+document.querySelector('#recTable tbody').innerHTML=d.records?.map(r=>`<tr><td><b>${r.record_type}</b></td><td style="word-break:break-all;max-width:300px;font-family:monospace;font-size:.8rem">${r.value||'N/A'}</td><td>${r.ttl||'N/A'}</td><td><span class="badge badge-${r.is_anomaly?'critical':'valid'}">${r.status}</span></td></tr>`).join('')||'';
+const em=d.email_security||{};document.getElementById('spf').textContent=em.spf_status==='valid'?'✅':'⚠️';
+document.getElementById('dkim').textContent=em.dkim_status==='configured'?'✅':'⚠️';document.getElementById('dmarc').textContent=em.dmarc_status==='valid'?'✅':'⚠️';
+document.getElementById('emailDetail').innerHTML=`<div class="finding"><b>SPF:</b> <code style="background:#000;padding:4px 8px;border-radius:4px">${em.spf_record||'Not found'}</code></div><div class="finding"><b>DMARC:</b> <code style="background:#000;padding:4px 8px;border-radius:4px">${em.dmarc_record||'Not found'}</code> (Policy: ${em.dmarc_policy||'none'})</div>`;
+document.getElementById('findingsList').innerHTML=d.findings?.map(f=>`<div class="finding ${f.severity}"><div class="finding-head"><span class="finding-cat">${f.category}</span><span class="badge" style="background:var(--${f.severity})">${f.severity.toUpperCase()}</span></div><div style="color:var(--muted);font-size:.9rem">${f.finding}</div>${f.recommendation?`<div class="finding-rec">💡 ${f.recommendation}</div>`:''}</div>`).join('')||'<p>No findings</p>';
+document.querySelector('#subsTable tbody').innerHTML=d.subdomains?.map(s=>`<tr><td>${s.subdomain}</td><td>${s.ip_addresses?.join(', ')||'N/A'}</td><td>${s.source}</td></tr>`).join('')||'';}
+function showTab(id){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.querySelector(`[onclick="showTab('${id}')"]`).classList.add('active');document.getElementById('tab-'+id).classList.add('active');}
+function log(t,m){const c=document.getElementById('console'),l=document.createElement('div');l.className='console-line '+t;l.textContent=`[${new Date().toLocaleTimeString()}] ${m}`;c.appendChild(l);c.scrollTop=c.scrollHeight;}
+function clearConsole(){document.getElementById('console').innerHTML='';}
+function downloadJSON(){if(!data)return;const b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`dnsguard-${data.domain}.json`;a.click();}
+function loadSample(){showResults({domain:"example.com",client_name:"Demo",scan_timestamp:new Date().toISOString(),scan_id:"demo",overall_risk_score:72,risk_level:"medium",records:[{record_type:"A",value:"93.184.216.34",ttl:3600,status:"valid",is_anomaly:false},{record_type:"MX",value:"10 mail.example.com.",ttl:3600,status:"valid",is_anomaly:false},{record_type:"TXT",value:"v=spf1 include:_spf.google.com ~all",ttl:3600,status:"valid",is_anomaly:false}],email_security:{spf_status:"valid",spf_record:"v=spf1 include:_spf.google.com ~all",dkim_status:"configured",dmarc_status:"valid",dmarc_record:"v=DMARC1; p=quarantine",dmarc_policy:"quarantine",overall_score:80,grade:"B"},dnssec:{implemented:false},threat_intel:[{target:"93.184.216.34",source:"VirusTotal",is_malicious:false}],subdomains:[{subdomain:"www.example.com",ip_addresses:["93.184.216.34"],source:"brute-force"},{subdomain:"mail.example.com",ip_addresses:["93.184.216.35"],source:"brute-force"}],findings:[{severity:"medium",category:"DNSSEC",finding:"Not implemented",recommendation:"Enable DNSSEC"},{severity:"low",category:"Email",finding:"DMARC policy is quarantine",recommendation:"Consider p=reject"}],recommendations:["Enable DNSSEC","Upgrade DMARC"]});document.getElementById('loading').classList.remove('active');}
+</script>
+</body>
+</html>
