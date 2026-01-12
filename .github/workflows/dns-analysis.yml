@@ -25,6 +25,7 @@ jobs:
         with: {python-version: '3.11', cache: 'pip'}
       - run: pip install -r requirements.txt
       - name: Run Analysis
+        id: scan
         env:
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
@@ -34,6 +35,24 @@ jobs:
           [ "${{ inputs.enable_subdomains }}" = "true" ] && CMD="$CMD -s"
           [ "${{ inputs.enable_threat_intel }}" = "true" ] && CMD="$CMD -t -g"
           eval $CMD
+          REPORT=$(ls -t reports/*.json | head -1)
+          echo "report_file=$REPORT" >> $GITHUB_OUTPUT
+      - name: Post Results to Firebase
+        env:
+          CLOUD_FUNCTION_URL: ${{ secrets.DNSGUARD_CLOUD_FUNCTION_URL }}
+        run: |
+          REPORT="${{ steps.scan.outputs.report_file }}"
+          if [ -z "$CLOUD_FUNCTION_URL" ]; then
+            echo "⚠️ DNSGUARD_CLOUD_FUNCTION_URL not set, skipping"
+            exit 0
+          fi
+          if [ -f "$REPORT" ]; then
+            echo "📤 Posting results to Firebase..."
+            curl -s -X POST "$CLOUD_FUNCTION_URL" \
+              -H "Content-Type: application/json" \
+              -d @"$REPORT"
+            echo "✅ Done"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: dnsguard-${{ inputs.domain }}
