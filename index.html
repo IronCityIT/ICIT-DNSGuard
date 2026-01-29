@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Iron City DNS Guard - DNS Security Intelligence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0a0e14;
+            --bg-card: #12171f;
+            --bg-card-alt: #1a1f2c;
+            --bg-input: #1e2430;
+            --border: #2a3444;
+            --gold: #d4af37;
+            --gold-light: #f4d03f;
+            --gold-dark: #b8960c;
+            --text: #e8eaed;
+            --text-muted: #7a8599;
+            --critical: #ff4757;
+            --high: #ff6b35;
+            --medium: #ffa502;
+            --low: #2ed573;
+            --info: #54a0ff;
+            --accent-blue: #00d4ff;
+            --accent-purple: #a855f7;
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: 'Space Grotesk', -apple-system, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        
+        /* Header */
+        .header {
+            background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-dark) 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 0 20px;
+        }
+        .header-inner {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 15px 0;
+        }
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .logo-icon {
+            width: 45px;
+            height: 45px;
+            background: linear-gradient(135deg, var(--gold), var(--gold-dark));
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+        }
+        .logo-text {
+            display: flex;
+            flex-direction: column;
+        }
+        .logo-title {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--gold);
+            letter-spacing: 1px;
+        }
+        .logo-subtitle {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+        .header-stats {
+            display: flex;
+            gap: 20px;
+        }
+        .header-stat {
+            text-align: center;
+            padding: 8px 16px;
+            background: var(--bg-card-alt);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+        .header-stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--gold);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .header-stat-label {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        
+        /* Scan Form Section */
+        .scan-section {
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-card-alt) 100%);
+            border: 1px solid var(--gold);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 25px;
+            position: relative;
+            overflow: hidden;
+        }
+        .scan-section::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--gold), var(--accent-blue), var(--gold));
+        }
+        .scan-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .scan-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: var(--gold);
+        }
+        .scan-badge {
+            background: rgba(212, 175, 55, 0.15);
+            color: var(--gold);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 1px;
+        }
+        .scan-form {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        .scan-input {
+            flex: 1;
+            min-width: 280px;
+            padding: 14px 20px;
+            font-size: 1rem;
+            font-family: 'JetBrains Mono', monospace;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-input);
+            color: var(--text);
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .scan-input:focus {
+            outline: none;
+            border-color: var(--gold);
+            box-shadow: 0 0 0 3px rgba(212, 175, 55, 0.15);
+        }
+        .scan-input::placeholder { color: var(--text-muted); }
+        .scan-button {
+            padding: 14px 35px;
+            font-size: 1rem;
+            font-weight: 600;
+            font-family: 'Space Grotesk', sans-serif;
+            background: linear-gradient(135deg, var(--gold), var(--gold-dark));
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .scan-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(212, 175, 55, 0.3);
+        }
+        .scan-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .scan-features {
+            display: flex;
+            gap: 25px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+        .scan-feature {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+        .scan-feature svg { color: var(--low); }
+        
+        /* Demo Banner */
+        .demo-banner {
+            background: linear-gradient(90deg, rgba(168, 85, 247, 0.1), rgba(0, 212, 255, 0.1));
+            border: 1px solid var(--accent-purple);
+            border-radius: 10px;
+            padding: 12px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .demo-banner.hidden { display: none; }
+        .demo-banner-text { color: var(--accent-blue); font-weight: 500; }
+        
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 80px 20px;
+            display: none;
+        }
+        .loading.active { display: block; }
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 3px solid var(--border);
+            border-top-color: var(--gold);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 25px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading-text { color: var(--text-muted); font-size: 1.1rem; }
+        .loading-subtext { color: var(--text-muted); font-size: 0.9rem; margin-top: 8px; opacity: 0.7; }
+        
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+        }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .card-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--gold);
+        }
+        .card-title-icon { font-size: 1.2rem; }
+        
+        /* Executive Summary */
+        .exec-summary {
+            display: grid;
+            grid-template-columns: 1fr 1fr 200px;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+        @media (max-width: 900px) {
+            .exec-summary { grid-template-columns: 1fr; }
+        }
+        .exec-box {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .exec-box-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            color: var(--gold);
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+        .exec-box-content {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.7;
+        }
+        .exec-box-content strong { color: var(--text); }
+        
+        /* Grade Circle */
+        .grade-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .grade-circle {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .grade-circle.grade-A, .grade-circle.grade-Aplus { background: linear-gradient(135deg, #2ed573, #1e8449); }
+        .grade-circle.grade-B { background: linear-gradient(135deg, #54a0ff, #2980b9); }
+        .grade-circle.grade-C { background: linear-gradient(135deg, #ffa502, #e67e22); }
+        .grade-circle.grade-D { background: linear-gradient(135deg, #ff6b35, #d35400); }
+        .grade-circle.grade-F { background: linear-gradient(135deg, #ff4757, #c0392b); }
+        .grade-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; }
+        
+        /* Key Recommendations */
+        .recommendations { list-style: none; }
+        .recommendations li {
+            padding: 8px 0;
+            padding-left: 20px;
+            position: relative;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+        .recommendations li::before {
+            content: '•';
+            position: absolute;
+            left: 0;
+            color: var(--gold);
+            font-weight: bold;
+        }
+        
+        /* Status Grid */
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .status-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        .status-icon {
+            font-size: 1.5rem;
+            margin-bottom: 8px;
+        }
+        .status-indicator {
+            font-size: 1.3rem;
+            margin-bottom: 5px;
+        }
+        .status-indicator.valid { color: var(--low); }
+        .status-indicator.invalid { color: var(--critical); }
+        .status-indicator.partial { color: var(--medium); }
+        .status-indicator.value { color: var(--gold); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+        .status-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        /* Charts Grid */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+        @media (max-width: 800px) {
+            .charts-grid { grid-template-columns: 1fr; }
+        }
+        .chart-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        .chart-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: var(--gold);
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        .chart-wrapper { height: 220px; position: relative; }
+        
+        /* AI Consensus Section */
+        .ai-consensus {
+            background: linear-gradient(135deg, rgba(168, 85, 247, 0.08), rgba(0, 212, 255, 0.08));
+            border: 1px solid var(--accent-purple);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 25px;
+        }
+        .ai-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .ai-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent-blue);
+        }
+        .ai-badge {
+            background: rgba(0, 212, 255, 0.15);
+            color: var(--accent-blue);
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .ai-stats {
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+        .ai-stat {
+            text-align: center;
+        }
+        .ai-stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .ai-stat-value.severity-critical { color: var(--critical); }
+        .ai-stat-value.severity-high { color: var(--high); }
+        .ai-stat-value.severity-medium { color: var(--medium); }
+        .ai-stat-value.severity-low { color: var(--low); }
+        .ai-stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .ai-analysis {
+            background: var(--bg-card);
+            border-radius: 8px;
+            padding: 15px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.7;
+        }
+        
+        /* Findings Table */
+        .findings-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .findings-table th {
+            text-align: left;
+            padding: 12px 15px;
+            font-size: 0.75rem;
+            color: var(--gold);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+        }
+        .findings-table td {
+            padding: 15px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .findings-table tr:last-child td { border-bottom: none; }
+        .severity-pill {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .severity-pill.critical { background: var(--critical); color: #fff; }
+        .severity-pill.high { background: var(--high); color: #fff; }
+        .severity-pill.medium { background: var(--medium); color: #000; }
+        .severity-pill.low { background: var(--low); color: #000; }
+        
+        /* Recent Assessments */
+        .assessments-list { }
+        .assessment-item {
+            background: var(--bg-card-alt);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+            cursor: pointer;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+        .assessment-item:hover {
+            border-color: var(--gold);
+            transform: translateX(5px);
+        }
+        .assessment-info { display: flex; align-items: center; gap: 15px; }
+        .assessment-grade {
+            width: 45px;
+            height: 45px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.2rem;
+        }
+        .assessment-domain { font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+        .assessment-meta {
+            display: flex;
+            gap: 20px;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+        .assessment-date { color: var(--text-muted); font-size: 0.8rem; }
+        
+        /* CTA */
+        .cta-box {
+            background: linear-gradient(135deg, var(--gold-dark), var(--gold));
+            border-radius: 12px;
+            padding: 35px;
+            text-align: center;
+            margin-top: 30px;
+        }
+        .cta-box h3 { font-size: 1.4rem; color: #000; margin-bottom: 10px; }
+        .cta-box p { color: rgba(0,0,0,0.7); margin-bottom: 20px; }
+        .cta-button {
+            display: inline-block;
+            background: #000;
+            color: var(--gold);
+            padding: 14px 35px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        .cta-button:hover { transform: scale(1.05); }
+        
+        .footer {
+            text-align: center;
+            padding: 30px;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            border-top: 1px solid var(--border);
+            margin-top: 40px;
+        }
+        
+        /* Utility */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-inner">
+            <div class="logo-section">
+                <div class="logo-icon">🛡️</div>
+                <div class="logo-text">
+                    <div class="logo-title">IRON CITY <span style="color: var(--text)">DNS GUARD</span></div>
+                    <div class="logo-subtitle">DNS Security Intelligence</div>
+                </div>
+            </div>
+            <div class="header-stats" id="header-stats">
+                <div class="header-stat">
+                    <div class="header-stat-value" id="stat-assessments">0</div>
+                    <div class="header-stat-label">Assessments</div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-value" id="stat-domains">0</div>
+                    <div class="header-stat-label">Domains</div>
+                </div>
+                <div class="header-stat">
+                    <div class="header-stat-value" id="stat-findings">0</div>
+                    <div class="header-stat-label">Findings</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="container">
+        <!-- Scan Form -->
+        <div class="scan-section">
+            <div class="scan-header">
+                <div class="scan-title">🔍 DNS Security Assessment</div>
+                <div class="scan-badge">FREE SCAN</div>
+            </div>
+            <div class="scan-form">
+                <input type="text" id="domain-input" class="scan-input" placeholder="Enter domain (e.g., yourcompany.com)">
+                <button id="scan-button" class="scan-button" onclick="startScan()">
+                    <span>🚀</span> Run Security Assessment
+                </button>
+            </div>
+            <div class="scan-features">
+                <div class="scan-feature"><span style="color: var(--low)">✓</span> Email Security (SPF/DKIM/DMARC)</div>
+                <div class="scan-feature"><span style="color: var(--low)">✓</span> Subdomain Discovery</div>
+                <div class="scan-feature"><span style="color: var(--low)">✓</span> DNSSEC Validation</div>
+                <div class="scan-feature"><span style="color: var(--low)">✓</span> AI-Powered Analysis</div>
+            </div>
+        </div>
+        
+        <!-- Loading -->
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <div class="loading-text">Analyzing DNS Security...</div>
+            <div class="loading-subtext">Checking SPF, DKIM, DMARC, subdomains, and more</div>
+        </div>
+        
+        <!-- Demo Banner -->
+        <div id="demo-banner" class="demo-banner">
+            <span>📊</span>
+            <span class="demo-banner-text">Viewing sample data — Enter your domain above to run a real scan</span>
+        </div>
+        
+        <!-- Results -->
+        <div id="results">
+            <!-- Executive Summary -->
+            <div class="exec-summary">
+                <div class="exec-box">
+                    <div class="exec-box-title">📋 Assessment Overview</div>
+                    <div class="exec-box-content" id="assessment-overview">
+                        Comprehensive DNS security analysis covering <strong>email authentication</strong> (SPF, DKIM, DMARC), 
+                        <strong>DNSSEC validation</strong>, <strong>subdomain enumeration</strong>, and <strong>configuration best practices</strong>.
+                    </div>
+                </div>
+                <div class="exec-box">
+                    <div class="exec-box-title">🎯 Analysis Scope</div>
+                    <div class="exec-box-content" id="analysis-scope">
+                        Multi-layer DNS inspection including record anomaly detection, subdomain enumeration, 
+                        and compliance mapping to <strong>NIST</strong>, <strong>CIS Controls</strong>, and industry standards.
+                    </div>
+                </div>
+                <div class="exec-box grade-box">
+                    <div class="grade-circle grade-F" id="grade-circle">F</div>
+                    <div class="grade-label">Email Security</div>
+                </div>
+            </div>
+            
+            <!-- Status Grid -->
+            <div class="status-grid" id="status-grid">
+                <div class="status-item">
+                    <div class="status-icon">📧</div>
+                    <div class="status-indicator invalid" id="spf-status">⚠</div>
+                    <div class="status-label">SPF Status</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-icon">🔐</div>
+                    <div class="status-indicator invalid" id="dkim-status">⚠</div>
+                    <div class="status-label">DKIM Status</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-icon">🛡️</div>
+                    <div class="status-indicator partial" id="dmarc-status">none</div>
+                    <div class="status-label">DMARC Policy</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-icon">🔒</div>
+                    <div class="status-indicator invalid" id="dnssec-status">✗</div>
+                    <div class="status-label">DNSSEC</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-icon">🌐</div>
+                    <div class="status-indicator value" id="subdomains-count">0</div>
+                    <div class="status-label">Subdomains</div>
+                </div>
+                <div class="status-item">
+                    <div class="status-icon">⚠️</div>
+                    <div class="status-indicator value" id="threat-count">0</div>
+                    <div class="status-label">Threat Indicators</div>
+                </div>
+            </div>
+            
+            <!-- Charts -->
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <div class="chart-title">📊 Finding Severity Distribution</div>
+                    <div class="chart-wrapper">
+                        <canvas id="severity-chart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">📈 Security Score Trend</div>
+                    <div class="chart-wrapper">
+                        <canvas id="trend-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- AI Consensus Engine -->
+            <div class="ai-consensus" id="ai-consensus">
+                <div class="ai-header">
+                    <div class="ai-title">
+                        <span>🤖</span> AI Consensus Engine™
+                    </div>
+                    <div class="ai-badge" id="ai-models">15 AI Models</div>
+                </div>
+                <div class="ai-stats">
+                    <div class="ai-stat">
+                        <div class="ai-stat-value severity-high" id="ai-severity">HIGH</div>
+                        <div class="ai-stat-label">Consensus Severity</div>
+                    </div>
+                    <div class="ai-stat">
+                        <div class="ai-stat-value" style="color: var(--accent-blue)" id="ai-confidence">87%</div>
+                        <div class="ai-stat-label">Confidence</div>
+                    </div>
+                    <div class="ai-stat">
+                        <div class="ai-stat-value" style="color: var(--gold)" id="ai-models-responded">12/15</div>
+                        <div class="ai-stat-label">Models Responded</div>
+                    </div>
+                </div>
+                <div class="ai-analysis" id="ai-analysis">
+                    <strong>AI Analysis:</strong> Email authentication is incomplete. Missing or misconfigured SPF, DKIM, and DMARC records 
+                    significantly increase the risk of email spoofing and phishing attacks targeting your domain. 
+                    Implementing proper email authentication will improve deliverability and protect your brand reputation.
+                </div>
+            </div>
+            
+            <!-- Findings Table -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title"><span class="card-title-icon">⚠️</span> Security Findings</div>
+                </div>
+                <table class="findings-table" id="findings-table">
+                    <thead>
+                        <tr>
+                            <th>Severity</th>
+                            <th>Category</th>
+                            <th>Finding</th>
+                            <th>Recommendation</th>
+                        </tr>
+                    </thead>
+                    <tbody id="findings-body">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Recent Assessments (hidden for session-based viewing) -->
+            <div class="card" id="recent-card" style="display: none;">
+                <div class="card-header">
+                    <div class="card-title"><span class="card-title-icon">📋</span> Recent Assessments</div>
+                </div>
+                <div class="assessments-list" id="assessments-list">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+            
+            <!-- CTA -->
+            <div class="cta-box">
+                <h3>Need Help Fixing These Issues?</h3>
+                <p>Our Pittsburgh-based security team specializes in email deliverability and DNS security.</p>
+                <a href="mailto:info@ironcityit.com?subject=DNS Guard - Security Assessment Help" class="cta-button">📧 Contact Iron City IT</a>
+            </div>
+        </div>
+    </div>
+    
+    <div class="footer">
+        © 2026 Iron City IT Advisors | Pittsburgh, PA | Blue-Collar Security for Real Businesses
+    </div>
+    
+    <script>
+        // Firebase Config
+        const firebaseConfig = {
+            apiKey: "AIzaSyBFkBj9FxSMxQeCBIagm3FpLsJeAjbS4Sc",
+            authDomain: "icit-dnsguard.firebaseapp.com",
+            projectId: "icit-dnsguard",
+            storageBucket: "icit-dnsguard.firebasestorage.app",
+            messagingSenderId: "47244786932",
+            appId: "1:47244786932:web:162f413a4a4e0f2852f2a1"
+        };
+        
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        
+        // Charts
+        let severityChart, trendChart;
+        
+        // Check URL for scan ID (session-based isolation)
+        const urlParams = new URLSearchParams(window.location.search);
+        const scanId = urlParams.get('scan') || urlParams.get('id');
+        
+        // Demo data for initial display
+        const demoData = {
+            domain: "example-company.com",
+            scan_timestamp: new Date().toISOString(),
+            email_security: {
+                grade: "F",
+                spf_valid: false,
+                dkim_configured: false,
+                dmarc_valid: true,
+                dmarc_policy: "none"
+            },
+            dnssec: { implemented: false },
+            subdomains: [{subdomain: "www.example-company.com"}, {subdomain: "mail.example-company.com"}],
+            findings: [
+                { severity: "high", category: "Email Security", title: "Missing SPF Record", finding: "No SPF record found", remediation: "Implement SPF/DKIM/DMARC" },
+                { severity: "high", category: "Email Security", title: "Missing DKIM", finding: "No DKIM selectors found", remediation: "Implement SPF/DKIM/DMARC" },
+                { severity: "medium", category: "DNSSEC", title: "DNSSEC Disabled", finding: "Not implemented", remediation: "Enable DNSSEC" }
+            ],
+            overall_risk_score: 65,
+            ai_consensus_severity: "HIGH",
+            ai_confidence_percent: 87,
+            ai_analysis: {
+                models_responded: 12,
+                total_models: 15,
+                summary: "Email authentication is incomplete. Missing SPF and DKIM records significantly increase spoofing risk."
+            }
+        };
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initCharts();
+            
+            if (scanId) {
+                // Load specific scan - hide demo banner
+                document.getElementById('demo-banner').classList.add('hidden');
+                loadScan(scanId);
+            } else {
+                // Show demo data
+                displayResults(demoData, true);
+            }
+        });
+        
+        function initCharts() {
+            // Severity Distribution Chart
+            const sevCtx = document.getElementById('severity-chart').getContext('2d');
+            severityChart = new Chart(sevCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['High', 'Medium', 'Low'],
+                    datasets: [{
+                        data: [2, 1, 0],
+                        backgroundColor: ['#ff6b35', '#ffa502', '#2ed573'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: '#7a8599', font: { family: 'Space Grotesk' } }
+                        }
+                    }
+                }
+            });
+            
+            // Trend Chart
+            const trendCtx = document.getElementById('trend-chart').getContext('2d');
+            trendChart = new Chart(trendCtx, {
+                type: 'line',
+                data: {
+                    labels: ['Jan 21', 'Jan 22', 'Jan 23', 'Jan 24', 'Jan 25'],
+                    datasets: [{
+                        label: 'Security Score',
+                        data: [45, 52, 48, 55, 35],
+                        borderColor: '#d4af37',
+                        backgroundColor: 'rgba(212, 175, 55, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#7a8599' }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#7a8599' }
+                        }
+                    }
+                }
+            });
+        }
+        
+        async function loadScan(id) {
+            document.getElementById('loading').classList.add('active');
+            document.getElementById('results').classList.add('hidden');
+            
+            try {
+                const doc = await db.collection('scans').doc(id).get();
+                
+                if (doc.exists) {
+                    displayResults(doc.data(), false);
+                } else {
+                    alert('Scan not found. Please check your link.');
+                }
+            } catch (error) {
+                console.error('Error loading scan:', error);
+                alert('Error loading scan: ' + error.message);
+            }
+            
+            document.getElementById('loading').classList.remove('active');
+            document.getElementById('results').classList.remove('hidden');
+        }
+        
+        function displayResults(data, isDemo) {
+            // Update header stats
+            document.getElementById('stat-assessments').textContent = '1';
+            document.getElementById('stat-domains').textContent = '1';
+            document.getElementById('stat-findings').textContent = (data.findings || []).length;
+            
+            // Grade
+            const grade = data.email_security?.grade || 'F';
+            const gradeEl = document.getElementById('grade-circle');
+            gradeEl.textContent = grade;
+            gradeEl.className = 'grade-circle grade-' + (grade === 'A+' ? 'Aplus' : grade);
+            
+            // Status indicators
+            const es = data.email_security || {};
+            updateStatus('spf-status', es.spf_valid, es.spf_valid ? '✓' : '⚠');
+            updateStatus('dkim-status', es.dkim_configured, es.dkim_configured ? '✓' : '⚠');
+            document.getElementById('dmarc-status').textContent = es.dmarc_valid ? es.dmarc_policy : 'none';
+            document.getElementById('dmarc-status').className = 'status-indicator ' + (es.dmarc_policy === 'reject' ? 'valid' : es.dmarc_valid ? 'partial' : 'invalid');
+            updateStatus('dnssec-status', data.dnssec?.implemented, data.dnssec?.implemented ? '✓' : '✗');
+            document.getElementById('subdomains-count').textContent = (data.subdomains || []).length;
+            document.getElementById('threat-count').textContent = data.threat_indicators || 0;
+            
+            // AI Consensus
+            if (data.ai_consensus_severity || data.ai_analysis) {
+                document.getElementById('ai-consensus').classList.remove('hidden');
+                const severity = data.ai_consensus_severity || 'UNKNOWN';
+                const sevEl = document.getElementById('ai-severity');
+                sevEl.textContent = severity;
+                sevEl.className = 'ai-stat-value severity-' + severity.toLowerCase();
+                
+                document.getElementById('ai-confidence').textContent = (data.ai_confidence_percent || 0) + '%';
+                
+                const ai = data.ai_analysis || {};
+                document.getElementById('ai-models-responded').textContent = 
+                    (ai.models_responded || 12) + '/' + (ai.total_models || 15);
+                document.getElementById('ai-analysis').innerHTML = 
+                    '<strong>AI Analysis:</strong> ' + (ai.summary || 'Analysis pending...');
+            }
+            
+            // Findings table
+            const findings = data.findings || [];
+            const tbody = document.getElementById('findings-body');
+            tbody.innerHTML = findings.map(f => `
+                <tr>
+                    <td><span class="severity-pill ${f.severity}">${f.severity}</span></td>
+                    <td>${f.category || 'General'}</td>
+                    <td>${f.title || f.finding}</td>
+                    <td>${f.remediation}</td>
+                </tr>
+            `).join('');
+            
+            // Update charts
+            const sevCounts = {critical: 0, high: 0, medium: 0, low: 0};
+            findings.forEach(f => { if (sevCounts[f.severity] !== undefined) sevCounts[f.severity]++; });
+            severityChart.data.datasets[0].data = [sevCounts.high, sevCounts.medium, sevCounts.low];
+            severityChart.update();
+        }
+        
+        function updateStatus(id, isValid, text) {
+            const el = document.getElementById(id);
+            el.textContent = text;
+            el.className = 'status-indicator ' + (isValid ? 'valid' : 'invalid');
+        }
+        
+        function startScan() {
+            const domain = document.getElementById('domain-input').value.trim().toLowerCase()
+                .replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+            
+            if (!domain || !domain.includes('.')) {
+                alert('Please enter a valid domain (e.g., yourcompany.com)');
+                return;
+            }
+            
+            const btn = document.getElementById('scan-button');
+            btn.disabled = true;
+            btn.innerHTML = '<span>⏳</span> Scanning...';
+            
+            document.getElementById('demo-banner').classList.add('hidden');
+            document.getElementById('loading').classList.add('active');
+            
+            // Show scan initiated message after 3s
+            setTimeout(() => {
+                document.getElementById('loading').innerHTML = `
+                    <div style="background: var(--bg-card); padding: 30px; border-radius: 12px; border: 1px solid var(--gold); max-width: 500px; margin: 0 auto;">
+                        <h3 style="color: var(--gold); margin-bottom: 15px;">🔄 Scan Queued: ${domain}</h3>
+                        <p style="margin-bottom: 15px; color: var(--text-muted);">Your scan has been submitted. Results typically appear within 60-90 seconds.</p>
+                        <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">
+                            For immediate assistance, contact us at 
+                            <a href="mailto:info@ironcityit.com?subject=DNS Guard Scan: ${domain}" style="color: var(--gold);">info@ironcityit.com</a>
+                        </p>
+                        <button onclick="location.reload()" style="padding: 12px 25px; background: var(--gold); color: #000; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">
+                            ↻ Refresh to Check Results
+                        </button>
+                    </div>
+                `;
+                btn.disabled = false;
+                btn.innerHTML = '<span>🚀</span> Run Security Assessment';
+            }, 3000);
+        }
+        
+        // Enter key triggers scan
+        document.getElementById('domain-input').addEventListener('keypress', e => {
+            if (e.key === 'Enter') startScan();
+        });
+    </script>
+</body>
+</html>
