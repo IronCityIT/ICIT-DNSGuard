@@ -2,12 +2,6 @@
   "hosting": {
     "public": "dashboard/public",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-    "rewrites": [
-      {"source": "/api/**", "function": "api"},
-      {"source": "**", "destination": "/index.html"}
-    ]
-  },
-  "functions": {
-    "source": "firebase/functions"
+    "rewrites": [{"source": "**", "destination": "/index.html"}]
   }
 }

@@ -1,230 +1,664 @@
 #!/usr/bin/env python3
-"""Iron City DNS Guard - Core Engine v3.0"""
-import os,sys,json,logging,hashlib,time
+"""
+Iron City DNS Guard v4.0 - SMB-Focused DNS Security Analyzer
+Focus: Email deliverability, subdomain discovery, basic DNS health
+Target: Small businesses for free marketing week
+"""
+
+import os
+import sys
+import json
+import time
+import logging
+import hashlib
+import re
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from pathlib import Path
-from dataclasses import dataclass,field,asdict
-from typing import Optional,List,Dict,Any,Tuple
-from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import dns.resolver
-import numpy as np
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-import joblib
+import dns.rdatatype
+import requests
 
-class RiskLevel(Enum):
-    CRITICAL="critical";HIGH="high";MEDIUM="medium";LOW="low";INFO="info"
-
-class RecordStatus(Enum):
-    VALID="valid";INVALID="invalid";MISSING="missing";ANOMALY="anomaly"
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA CLASSES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class DNSRecord:
-    domain:str;record_type:str;value:Optional[str];ttl:Optional[int]
-    status:RecordStatus=RecordStatus.VALID;anomaly_score:float=0.0;is_anomaly:bool=False
-    purpose:str="";recommendations:List[str]=field(default_factory=list);error:Optional[str]=None
-    def to_dict(self)->Dict:return{'domain':self.domain,'record_type':self.record_type,'value':self.value,'ttl':self.ttl,'status':self.status.value,'anomaly_score':round(self.anomaly_score,3),'is_anomaly':self.is_anomaly,'purpose':self.purpose,'recommendations':self.recommendations,'error':self.error}
-
-@dataclass
-class SPFValidation:
-    record:Optional[str]=None;status:str="missing";mechanism:str="";includes:List[str]=field(default_factory=list);score:int=0;issues:List[str]=field(default_factory=list)
-    def to_dict(self)->Dict:return asdict(self)
-
-@dataclass
-class DKIMValidation:
-    status:str="unknown";selectors_found:List[str]=field(default_factory=list);score:int=0;issues:List[str]=field(default_factory=list)
-    def to_dict(self)->Dict:return asdict(self)
-
-@dataclass
-class DMARCValidation:
-    record:Optional[str]=None;status:str="missing";policy:str="none";rua:List[str]=field(default_factory=list);score:int=0;issues:List[str]=field(default_factory=list)
-    def to_dict(self)->Dict:return asdict(self)
-
-@dataclass
-class EmailSecurityScore:
-    spf:SPFValidation=field(default_factory=SPFValidation)
-    dkim:DKIMValidation=field(default_factory=DKIMValidation)
-    dmarc:DMARCValidation=field(default_factory=DMARCValidation)
-    overall_score:int=0;grade:str="F"
-    def calculate_score(self):
-        s=0
-        if self.spf.status=="valid":s+=20;s+=15 if self.spf.mechanism=="-all" else 10 if self.spf.mechanism=="~all" else 5
-        self.spf.score=s
-        d=30 if self.dkim.status=="configured" else 15 if self.dkim.status=="partial" else 0
-        self.dkim.score=d
-        m=0
-        if self.dmarc.status=="valid":m=15;m+=20 if self.dmarc.policy=="reject" else 15 if self.dmarc.policy=="quarantine" else 5
-        self.dmarc.score=m
-        self.overall_score=s+d+m
-        self.grade="A+" if self.overall_score>=90 else "A" if self.overall_score>=80 else "B" if self.overall_score>=70 else "C" if self.overall_score>=60 else "D" if self.overall_score>=50 else "F"
-    def to_dict(self)->Dict:return{'spf':self.spf.to_dict(),'dkim':self.dkim.to_dict(),'dmarc':self.dmarc.to_dict(),'overall_score':self.overall_score,'grade':self.grade,'spf_status':self.spf.status,'spf_record':self.spf.record,'dkim_status':self.dkim.status,'dkim_selectors':self.dkim.selectors_found,'dmarc_status':self.dmarc.status,'dmarc_record':self.dmarc.record,'dmarc_policy':self.dmarc.policy}
-
-@dataclass
-class GeoLocation:
-    ip:str;country:str="Unknown";city:str="Unknown";region:str="Unknown";isp:str="Unknown";source:str=""
-    def to_dict(self)->Dict:return asdict(self)
-
-@dataclass
-class ThreatIntel:
-    target:str;source:str;is_malicious:bool=False;confidence_score:float=0.0;abuse_score:int=0;total_reports:int=0;categories:List[str]=field(default_factory=list)
-    def to_dict(self)->Dict:return asdict(self)
-
-@dataclass
-class DNSSECStatus:
-    implemented:bool=False;validated:bool=False;issues:List[str]=field(default_factory=list)
-    def to_dict(self)->Dict:return asdict(self)
-
-@dataclass
-class SubdomainResult:
-    subdomain:str;ip_addresses:List[str]=field(default_factory=list);cnames:List[str]=field(default_factory=list);source:str="enumeration";is_alive:bool=True
-    def to_dict(self)->Dict:return asdict(self)
-
-@dataclass
-class PerformanceMetrics:
-    dns_server:str;server_name:str="";latency_avg:float=0.0;latency_min:float=0.0;latency_max:float=0.0;queries_per_second:float=0.0;packet_loss:float=0.0
-    def to_dict(self)->Dict:return asdict(self)
+    domain: str
+    record_type: str
+    value: str
+    ttl: int = 0
+    purpose: str = ""
 
 @dataclass
 class Finding:
-    severity:str;category:str;finding:str;recommendation:str
-    def to_dict(self)->Dict:return asdict(self)
+    severity: str  # critical, high, medium, low, info
+    category: str  # Email Security, DNS Configuration, Subdomain, etc.
+    title: str
+    finding: str
+    remediation: str
+    business_impact: str = ""  # SMB-friendly explanation
 
 @dataclass
-class HopsAnalysis:
-    target:str;hops:List[Dict]=field(default_factory=list);total_hops:int=0
-    def to_dict(self)->Dict:return asdict(self)
+class SubdomainResult:
+    subdomain: str
+    ip_addresses: List[str] = field(default_factory=list)
+    cnames: List[str] = field(default_factory=list)
+    source: str = "unknown"
+    is_alive: bool = False
 
 @dataclass
-class DNSGuardConfig:
-    model_path:str="./models/dns_anomaly_model.pkl";timeout:int=10;anomaly_contamination:float=0.05
+class EmailSecurityResult:
+    # SPF
+    spf_record: str = ""
+    spf_valid: bool = False
+    spf_mechanism: str = ""
+    spf_issues: List[str] = field(default_factory=list)
+    spf_includes: List[str] = field(default_factory=list)
+    spf_lookup_count: int = 0
+    
+    # DKIM
+    dkim_configured: bool = False
+    dkim_selectors: List[str] = field(default_factory=list)
+    dkim_issues: List[str] = field(default_factory=list)
+    
+    # DMARC
+    dmarc_record: str = ""
+    dmarc_valid: bool = False
+    dmarc_policy: str = "none"
+    dmarc_rua: List[str] = field(default_factory=list)
+    dmarc_issues: List[str] = field(default_factory=list)
+    
+    # MTA-STS & TLS-RPT
+    mta_sts: bool = False
+    tls_rpt: bool = False
+    
+    # Overall
+    overall_score: int = 0
+    grade: str = "F"
+
+@dataclass
+class DNSSECResult:
+    implemented: bool = False
+    issues: List[str] = field(default_factory=list)
 
 @dataclass
 class DomainAnalysis:
-    domain:str;client_name:str;scan_timestamp:datetime=field(default_factory=datetime.utcnow);scan_id:str=""
-    records:List[DNSRecord]=field(default_factory=list);raw_records:Dict[str,List[str]]=field(default_factory=dict)
-    email_security:EmailSecurityScore=field(default_factory=EmailSecurityScore)
-    dnssec:DNSSECStatus=field(default_factory=DNSSECStatus)
-    threat_intel:List[ThreatIntel]=field(default_factory=list)
-    geolocations:List[GeoLocation]=field(default_factory=list)
-    subdomains:List[SubdomainResult]=field(default_factory=list)
-    performance:List[PerformanceMetrics]=field(default_factory=list)
-    hops_analysis:List[HopsAnalysis]=field(default_factory=list)
-    overall_risk_score:int=100;risk_level:RiskLevel=RiskLevel.INFO
-    findings:List[Finding]=field(default_factory=list);recommendations:List[str]=field(default_factory=list)
-    scan_duration_seconds:float=0.0;errors:List[str]=field(default_factory=list)
+    domain: str
+    client_name: str = "Unknown"
+    scan_id: str = ""
+    scan_timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    
+    # Core data
+    records: List[DNSRecord] = field(default_factory=list)
+    subdomains: List[SubdomainResult] = field(default_factory=list)
+    email_security: EmailSecurityResult = field(default_factory=EmailSecurityResult)
+    dnssec: DNSSECResult = field(default_factory=DNSSECResult)
+    
+    # Findings
+    findings: List[Finding] = field(default_factory=list)
+    
+    # Scores (0-100, higher = more risk)
+    overall_risk_score: int = 0
+    risk_level: str = "unknown"
+    
+    # Executive summary for SMBs
+    executive_summary: str = ""
+    quick_wins: List[str] = field(default_factory=list)
+    
+    # Metadata
+    scan_duration_seconds: float = 0.0
+    tools_used: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    
     def __post_init__(self):
-        if not self.scan_id:self.scan_id=hashlib.sha256(f"{self.domain}-{self.scan_timestamp.isoformat()}".encode()).hexdigest()[:12]
-    def add_finding(self,sev,cat,find,rec):self.findings.append(Finding(sev,cat,find,rec))
-    def calculate_risk_score(self):
-        score=100;self.email_security.calculate_score()
-        if self.email_security.overall_score<50:score-=20;self.add_finding('high','Email Security',f'Grade {self.email_security.grade}','Implement SPF/DKIM/DMARC')
-        elif self.email_security.overall_score<70:score-=10
-        if not self.dnssec.implemented:score-=10;self.add_finding('medium','DNSSEC','Not implemented','Enable DNSSEC')
-        mal=sum(1 for t in self.threat_intel if t.is_malicious)
-        if mal:score-=min(30,mal*10);self.add_finding('critical','Threat Intel',f'{mal} malicious IP(s)','Investigate immediately')
-        anom=sum(1 for r in self.records if r.is_anomaly)
-        if anom:score-=min(15,anom*3)
-        types={r.record_type for r in self.records if r.value}
-        if 'A' not in types and 'AAAA' not in types:score-=15
-        self.overall_risk_score=max(0,min(100,score))
-        self.risk_level=RiskLevel.LOW if self.overall_risk_score>=90 else RiskLevel.MEDIUM if self.overall_risk_score>=70 else RiskLevel.HIGH if self.overall_risk_score>=50 else RiskLevel.CRITICAL
-        self.findings.sort(key=lambda x:{'critical':0,'high':1,'medium':2,'low':3,'info':4}.get(x.severity,4))
-        self.recommendations=[f.recommendation for f in self.findings if f.recommendation]
-    def to_dict(self)->Dict:
-        return{'domain':self.domain,'client_name':self.client_name,'scan_timestamp':self.scan_timestamp.isoformat(),'scan_id':self.scan_id,'records':[r.to_dict() for r in self.records],'raw_records':self.raw_records,'email_security':self.email_security.to_dict(),'dnssec':self.dnssec.to_dict(),'threat_intel':[t.to_dict() for t in self.threat_intel],'geolocations':[g.to_dict() for g in self.geolocations],'subdomains':[s.to_dict() for s in self.subdomains],'performance':[p.to_dict() for p in self.performance],'hops_analysis':[h.to_dict() for h in self.hops_analysis],'overall_risk_score':self.overall_risk_score,'risk_level':self.risk_level.value,'findings':[f.to_dict() for f in self.findings],'recommendations':self.recommendations,'scan_duration_seconds':self.scan_duration_seconds,'errors':self.errors}
+        if not self.scan_id:
+            self.scan_id = hashlib.md5(f"{self.domain}{time.time()}".encode()).hexdigest()[:16]
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization"""
+        d = asdict(self)
+        return d
+
+
+# Common DKIM selectors to check
+DKIM_SELECTORS = [
+    "default", "google", "selector1", "selector2", "k1", "k2",
+    "dkim", "mail", "email", "mandrill", "mailchimp", "sendgrid",
+    "amazonses", "ses", "zendesk", "freshdesk", "mailgun", "sparkpost",
+    "mimecast", "proofpoint", "smtp", "s1", "s2", "mx", "cm", "pm"
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN ANALYZER CLASS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class DNSGuardAnalyzer:
-    RECORD_TYPES=['A','AAAA','MX','CNAME','TXT','NS','SOA','CAA']
-    PURPOSES={'A':'IPv4 Address','AAAA':'IPv6 Address','MX':'Mail Exchange','CNAME':'Alias','TXT':'Text Record','NS':'Name Server','SOA':'Start of Authority','CAA':'CA Authorization'}
-    DKIM_SELECTORS=['default','google','selector1','selector2','k1','mail','dkim']
-    def __init__(self,config:DNSGuardConfig=None,logger=None):
-        self.config=config or DNSGuardConfig();self.logger=logger or logging.getLogger('dnsguard')
-        self.resolver=dns.resolver.Resolver();self.resolver.timeout=self.config.timeout
-        self.anomaly_model=None;self.scaler=None;self._init_model()
-    def _init_model(self):
-        mp=Path(self.config.model_path)
-        if mp.exists():
-            try:d=joblib.load(mp);self.anomaly_model,self.scaler=d['model'],d['scaler'];return
-            except:pass
-        ttls=[30,60,120,300,600,900,1800,3600,7200,14400,43200,86400]
-        np.random.seed(42)
-        X=np.array([[max(1,t+np.random.normal(0,t*0.1))] for t in ttls for _ in range(50)]+[[1],[5],[9999999]]*3)
-        self.scaler=StandardScaler();self.anomaly_model=IsolationForest(n_estimators=100,contamination=0.05,random_state=42)
-        self.anomaly_model.fit(self.scaler.fit_transform(X))
-        mp.parent.mkdir(parents=True,exist_ok=True)
-        joblib.dump({'model':self.anomaly_model,'scaler':self.scaler},mp)
-    def _detect_anomaly(self,ttl)->Tuple[bool,float]:
-        if ttl is None:return False,0.0
-        try:X=self.scaler.transform([[ttl]]);return self.anomaly_model.predict(X)[0]==-1,float(-self.anomaly_model.score_samples(X)[0])
-        except:return False,0.0
-    def _purpose(self,rtype,val):
-        if rtype=='TXT' and val:
-            vl=val.lower()
-            if 'v=spf1' in vl:return 'SPF Record'
-            if 'v=dmarc1' in vl:return 'DMARC Record'
-            if 'v=dkim1' in vl or 'k=rsa' in vl:return 'DKIM Record'
-        return self.PURPOSES.get(rtype,'DNS Record')
-    def collect_records(self,domain)->Tuple[List[DNSRecord],Dict]:
-        records,raw=[],{}
-        for rt in self.RECORD_TYPES:
+    """SMB-focused DNS Security Analyzer"""
+    
+    def __init__(self, logger: logging.Logger = None):
+        self.logger = logger or logging.getLogger('dnsguard')
+        self.resolver = dns.resolver.Resolver()
+        self.resolver.timeout = 5
+        self.resolver.lifetime = 10
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'IronCity-DNSGuard/4.0'})
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # DNS RECORD COLLECTION
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def collect_records(self, domain: str) -> List[DNSRecord]:
+        """Collect all DNS records for a domain"""
+        records = []
+        record_types = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA', 'CNAME', 'CAA']
+        
+        purpose_map = {
+            'A': 'Website/Server IP Address',
+            'AAAA': 'IPv6 Address',
+            'MX': 'Email Server',
+            'TXT': 'Text Record',
+            'NS': 'Name Server',
+            'SOA': 'Zone Authority',
+            'CNAME': 'Alias',
+            'CAA': 'SSL Certificate Authority'
+        }
+        
+        for rtype in record_types:
             try:
-                ans=self.resolver.resolve(domain,rt);raw[rt]=[str(r) for r in ans]
-                for r in ans:
-                    v=str(r);ia,sc=self._detect_anomaly(ans.ttl)
-                    records.append(DNSRecord(domain=domain,record_type=rt,value=v,ttl=ans.ttl,status=RecordStatus.ANOMALY if ia else RecordStatus.VALID,anomaly_score=sc,is_anomaly=ia,purpose=self._purpose(rt,v)))
-            except dns.resolver.NoAnswer:raw[rt]=[]
-            except dns.resolver.NXDOMAIN:records.append(DNSRecord(domain=domain,record_type='NXDOMAIN',value=None,ttl=None,status=RecordStatus.INVALID,error="Domain not found"));break
-            except:pass
-        return records,raw
-    def validate_spf(self,domain,records)->SPFValidation:
-        spf=SPFValidation();txt=[r for r in records if r.record_type=='TXT' and r.value and 'v=spf1' in r.value.lower()]
-        if not txt:spf.issues.append("No SPF record");return spf
-        spf.record=txt[0].value.strip('"');spf.status="valid"
-        if '-all' in spf.record:spf.mechanism='-all'
-        elif '~all' in spf.record:spf.mechanism='~all';spf.issues.append("Uses ~all softfail")
-        elif '?all' in spf.record:spf.mechanism='?all';spf.status="partial"
-        elif '+all' in spf.record:spf.mechanism='+all';spf.status="invalid";spf.issues.append("CRITICAL: +all allows any sender")
-        return spf
-    def validate_dkim(self,domain)->DKIMValidation:
-        dkim=DKIMValidation()
-        for sel in self.DKIM_SELECTORS:
+                answers = self.resolver.resolve(domain, rtype)
+                for rdata in answers:
+                    value = str(rdata).strip('"')
+                    purpose = purpose_map.get(rtype, rtype)
+                    
+                    # Identify special TXT records
+                    if rtype == 'TXT':
+                        if 'v=spf1' in value.lower():
+                            purpose = 'SPF (Email Authentication)'
+                        elif 'v=dmarc1' in value.lower():
+                            purpose = 'DMARC (Email Policy)'
+                        elif 'v=dkim1' in value.lower():
+                            purpose = 'DKIM (Email Signing)'
+                    
+                    records.append(DNSRecord(
+                        domain=domain,
+                        record_type=rtype,
+                        value=value,
+                        ttl=answers.rrset.ttl,
+                        purpose=purpose
+                    ))
+            except dns.resolver.NXDOMAIN:
+                self.logger.debug(f"NXDOMAIN for {domain} {rtype}")
+            except dns.resolver.NoAnswer:
+                self.logger.debug(f"No {rtype} record for {domain}")
+            except Exception as e:
+                self.logger.debug(f"Error querying {rtype} for {domain}: {e}")
+        
+        return records
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # EMAIL SECURITY ANALYSIS (checkdmarc-style)
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def analyze_email_security(self, domain: str) -> Tuple[EmailSecurityResult, List[Finding]]:
+        """Comprehensive email security analysis - answers 'Will my emails land in spam?'"""
+        result = EmailSecurityResult()
+        findings = []
+        
+        # ─── SPF Analysis ───
+        try:
+            spf_answers = self.resolver.resolve(domain, 'TXT')
+            for rdata in spf_answers:
+                txt = str(rdata).strip('"')
+                if txt.lower().startswith('v=spf1'):
+                    result.spf_record = txt
+                    result.spf_valid = True
+                    
+                    # Parse mechanism
+                    if '-all' in txt:
+                        result.spf_mechanism = '-all (hard fail)'
+                    elif '~all' in txt:
+                        result.spf_mechanism = '~all (soft fail)'
+                        result.spf_issues.append("SPF uses soft fail (~all) - should use hard fail (-all)")
+                    elif '?all' in txt:
+                        result.spf_mechanism = '?all (neutral)'
+                        result.spf_issues.append("SPF uses neutral (?all) - provides no protection")
+                    elif '+all' in txt:
+                        result.spf_mechanism = '+all (pass all)'
+                        result.spf_issues.append("CRITICAL: SPF allows ANY server to send email (+all)")
+                    
+                    # Count DNS lookups (max 10 per RFC 7208)
+                    lookups = len(re.findall(r'include:|a:|mx:|ptr:|exists:', txt.lower()))
+                    result.spf_lookup_count = lookups
+                    if lookups > 10:
+                        result.spf_issues.append(f"SPF exceeds 10 DNS lookup limit ({lookups} found) - emails may fail")
+                    elif lookups > 7:
+                        result.spf_issues.append(f"SPF approaching lookup limit ({lookups}/10)")
+                    
+                    # Extract includes
+                    result.spf_includes = re.findall(r'include:([^\s]+)', txt)
+                    break
+        except Exception as e:
+            result.spf_issues.append("No SPF record found")
+        
+        if not result.spf_valid:
+            findings.append(Finding(
+                severity="high",
+                category="Email Security",
+                title="Missing SPF Record",
+                finding="No SPF record found for this domain",
+                remediation="Add an SPF TXT record to specify which servers can send email for your domain. Example: v=spf1 include:_spf.google.com ~all",
+                business_impact="Without SPF, spammers can easily send fake emails from your domain. Your legitimate emails are more likely to be marked as spam."
+            ))
+        elif result.spf_issues:
+            findings.append(Finding(
+                severity="medium",
+                category="Email Security",
+                title="SPF Configuration Issues",
+                finding="; ".join(result.spf_issues),
+                remediation="Update your SPF record to use -all (hard fail) and ensure you stay under 10 DNS lookups",
+                business_impact="Weak SPF settings reduce email deliverability and make spoofing easier."
+            ))
+        
+        # ─── DKIM Analysis ───
+        for selector in DKIM_SELECTORS:
             try:
-                self.resolver.resolve(f'{sel}._domainkey.{domain}','TXT')
-                dkim.selectors_found.append(sel);dkim.status="configured"
-            except:pass
-        if not dkim.selectors_found:dkim.issues.append("No DKIM selectors found")
-        return dkim
-    def validate_dmarc(self,domain)->DMARCValidation:
-        dmarc=DMARCValidation()
+                dkim_domain = f"{selector}._domainkey.{domain}"
+                self.resolver.resolve(dkim_domain, 'TXT')
+                result.dkim_configured = True
+                result.dkim_selectors.append(selector)
+            except:
+                pass
+        
+        if not result.dkim_configured:
+            findings.append(Finding(
+                severity="high",
+                category="Email Security",
+                title="No DKIM Records Found",
+                finding="No DKIM selectors found for common email providers",
+                remediation="Configure DKIM signing with your email provider. This adds a digital signature to prove emails are really from you.",
+                business_impact="Without DKIM, receiving servers can't verify your emails are authentic, increasing spam likelihood."
+            ))
+        
+        # ─── DMARC Analysis ───
         try:
-            ans=self.resolver.resolve(f'_dmarc.{domain}','TXT')
-            for r in ans:
-                v=str(r).strip('"')
-                if 'v=dmarc1' in v.lower():
-                    dmarc.record=v;dmarc.status="valid"
-                    if 'p=reject' in v.lower():dmarc.policy="reject"
-                    elif 'p=quarantine' in v.lower():dmarc.policy="quarantine"
-                    else:dmarc.policy="none";dmarc.issues.append("Policy is none - no enforcement")
-                    if 'rua=' in v.lower():dmarc.rua=[v.split('rua=')[1].split(';')[0]]
-        except:dmarc.issues.append("No DMARC record")
-        return dmarc
-    def analyze_email(self,domain,records)->EmailSecurityScore:
-        em=EmailSecurityScore();em.spf=self.validate_spf(domain,records);em.dkim=self.validate_dkim(domain);em.dmarc=self.validate_dmarc(domain);em.calculate_score()
-        return em
-    def check_dnssec(self,domain)->DNSSECStatus:
-        ds=DNSSECStatus()
-        try:self.resolver.resolve(domain,'DNSKEY');ds.implemented=True
-        except:ds.issues.append("No DNSKEY records")
-        return ds
-    def analyze_domain(self,domain,client_name="Unknown",scan_type="full")->DomainAnalysis:
-        start=time.time();self.logger.info(f"Analyzing {domain}")
-        analysis=DomainAnalysis(domain=domain,client_name=client_name)
+            dmarc_answers = self.resolver.resolve(f'_dmarc.{domain}', 'TXT')
+            for rdata in dmarc_answers:
+                txt = str(rdata).strip('"')
+                if 'v=dmarc1' in txt.lower():
+                    result.dmarc_record = txt
+                    result.dmarc_valid = True
+                    
+                    # Parse policy
+                    policy_match = re.search(r'p=(\w+)', txt.lower())
+                    if policy_match:
+                        result.dmarc_policy = policy_match.group(1)
+                    
+                    if result.dmarc_policy == 'none':
+                        result.dmarc_issues.append("DMARC policy is 'none' - no enforcement, monitoring only")
+                    elif result.dmarc_policy == 'quarantine':
+                        pass  # Acceptable
+                    elif result.dmarc_policy == 'reject':
+                        pass  # Best
+                    
+                    # Parse reporting addresses
+                    rua_match = re.search(r'rua=([^;\s]+)', txt)
+                    if rua_match:
+                        result.dmarc_rua = rua_match.group(1).split(',')
+                    else:
+                        result.dmarc_issues.append("No DMARC reporting address (rua) configured")
+                    break
+        except:
+            result.dmarc_issues.append("No DMARC record found")
+        
+        if not result.dmarc_valid:
+            findings.append(Finding(
+                severity="high",
+                category="Email Security",
+                title="Missing DMARC Record",
+                finding="No DMARC record found for this domain",
+                remediation="Add a DMARC TXT record at _dmarc.yourdomain.com. Start with: v=DMARC1; p=none; rua=mailto:dmarc@yourdomain.com",
+                business_impact="Without DMARC, you have no visibility into who is sending email as your domain, and no way to stop spoofing."
+            ))
+        elif result.dmarc_policy == 'none':
+            findings.append(Finding(
+                severity="medium",
+                category="Email Security",
+                title="DMARC Policy Not Enforcing",
+                finding="DMARC policy is set to 'none' - only monitoring, not blocking spoofed emails",
+                remediation="After reviewing DMARC reports, upgrade policy to p=quarantine or p=reject",
+                business_impact="Spoofed emails are still being delivered. Move to enforcement to protect your brand."
+            ))
+        
+        # ─── MTA-STS Check ───
         try:
-            analysis.records,analysis.raw_records=self.collect_records(domain)
-            analysis.email_security=self.analyze_email(domain,analysis.records)
-            analysis.dnssec=self.check_dnssec(domain)
-            analysis.calculate_risk_score()
-        except Exception as e:analysis.errors.append(str(e))
-        analysis.scan_duration_seconds=time.time()-start
-        self.logger.info(f"Done: {analysis.overall_risk_score}/100 in {analysis.scan_duration_seconds:.1f}s")
+            self.resolver.resolve(f'_mta-sts.{domain}', 'TXT')
+            result.mta_sts = True
+        except:
+            pass
+        
+        # ─── TLS-RPT Check ───
+        try:
+            self.resolver.resolve(f'_smtp._tls.{domain}', 'TXT')
+            result.tls_rpt = True
+        except:
+            pass
+        
+        # ─── Calculate Email Score & Grade ───
+        score = 0
+        if result.spf_valid:
+            score += 30
+            if '-all' in result.spf_mechanism:
+                score += 10
+        if result.dkim_configured:
+            score += 30
+        if result.dmarc_valid:
+            score += 20
+            if result.dmarc_policy == 'reject':
+                score += 10
+            elif result.dmarc_policy == 'quarantine':
+                score += 5
+        
+        result.overall_score = score
+        
+        if score >= 90:
+            result.grade = 'A+'
+        elif score >= 80:
+            result.grade = 'A'
+        elif score >= 70:
+            result.grade = 'B'
+        elif score >= 60:
+            result.grade = 'C'
+        elif score >= 40:
+            result.grade = 'D'
+        else:
+            result.grade = 'F'
+        
+        return result, findings
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # SUBDOMAIN ENUMERATION
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def enumerate_subdomains(self, domain: str) -> Tuple[List[SubdomainResult], List[Finding]]:
+        """Discover subdomains - answers 'What's publicly exposed?'"""
+        subdomains = []
+        findings = []
+        found_subs = set()
+        
+        # Method 1: Certificate Transparency (crt.sh)
+        try:
+            resp = self.session.get(
+                f"https://crt.sh/?q=%.{domain}&output=json",
+                timeout=15
+            )
+            if resp.status_code == 200:
+                certs = resp.json()
+                for cert in certs:
+                    name = cert.get('name_value', '')
+                    for sub in name.split('\n'):
+                        sub = sub.strip().lower()
+                        if sub and sub.endswith(domain) and '*' not in sub:
+                            found_subs.add(sub)
+        except Exception as e:
+            self.logger.debug(f"crt.sh error: {e}")
+        
+        # Method 2: Common subdomain brute force
+        common_subs = [
+            'www', 'mail', 'webmail', 'remote', 'ftp', 'smtp', 'pop', 'imap',
+            'blog', 'shop', 'store', 'api', 'dev', 'staging', 'test', 'beta',
+            'admin', 'portal', 'vpn', 'secure', 'login', 'sso', 'app', 'apps',
+            'cdn', 'static', 'assets', 'img', 'images', 'media', 'files',
+            'ns1', 'ns2', 'dns', 'mx', 'mx1', 'mx2', 'autodiscover', 'lyncdiscover',
+            'owa', 'exchange', 'cpanel', 'whm', 'plesk', 'support', 'help', 'docs'
+        ]
+        
+        def check_subdomain(sub):
+            fqdn = f"{sub}.{domain}"
+            try:
+                answers = self.resolver.resolve(fqdn, 'A')
+                return SubdomainResult(
+                    subdomain=fqdn,
+                    ip_addresses=[str(r) for r in answers],
+                    source='bruteforce',
+                    is_alive=True
+                )
+            except:
+                return None
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(check_subdomain, sub): sub for sub in common_subs}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    found_subs.add(result.subdomain)
+        
+        # Resolve all found subdomains
+        for sub in found_subs:
+            try:
+                ips = []
+                cnames = []
+                
+                try:
+                    a_answers = self.resolver.resolve(sub, 'A')
+                    ips = [str(r) for r in a_answers]
+                except:
+                    pass
+                
+                try:
+                    cname_answers = self.resolver.resolve(sub, 'CNAME')
+                    cnames = [str(r).rstrip('.') for r in cname_answers]
+                except:
+                    pass
+                
+                subdomains.append(SubdomainResult(
+                    subdomain=sub,
+                    ip_addresses=ips,
+                    cnames=cnames,
+                    source='crt.sh' if sub not in common_subs else 'bruteforce',
+                    is_alive=bool(ips or cnames)
+                ))
+            except:
+                pass
+        
+        # Check for potential issues
+        if len(subdomains) > 50:
+            findings.append(Finding(
+                severity="info",
+                category="Subdomain Security",
+                title="Large Attack Surface",
+                finding=f"Found {len(subdomains)} subdomains - this is a large attack surface",
+                remediation="Review all subdomains. Remove any that are unused or forgotten.",
+                business_impact="Each subdomain is a potential entry point. Forgotten subdomains are a common cause of breaches."
+            ))
+        
+        return subdomains, findings
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # DNSSEC CHECK
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def check_dnssec(self, domain: str) -> Tuple[DNSSECResult, List[Finding]]:
+        """Check DNSSEC implementation"""
+        result = DNSSECResult()
+        findings = []
+        
+        try:
+            self.resolver.resolve(domain, 'DNSKEY')
+            result.implemented = True
+        except:
+            result.issues.append("No DNSKEY records found")
+            findings.append(Finding(
+                severity="low",
+                category="DNS Configuration",
+                title="DNSSEC Not Implemented",
+                finding="DNSSEC is not configured for this domain",
+                remediation="Enable DNSSEC through your DNS provider to prevent DNS spoofing attacks",
+                business_impact="Without DNSSEC, attackers could redirect your visitors to fake websites. This is relatively rare but serious."
+            ))
+        
+        return result, findings
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # MAIN ANALYSIS
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def analyze(self, domain: str, client_name: str = "Unknown", 
+                enable_subdomains: bool = True) -> DomainAnalysis:
+        """Run complete analysis"""
+        start_time = time.time()
+        
+        # Clean domain
+        domain = domain.lower().strip()
+        if domain.startswith('http://') or domain.startswith('https://'):
+            domain = domain.split('://')[1].split('/')[0]
+        
+        self.logger.info(f"Analyzing {domain}")
+        
+        analysis = DomainAnalysis(domain=domain, client_name=client_name)
+        all_findings = []
+        
+        try:
+            # 1. Collect DNS records
+            analysis.records = self.collect_records(domain)
+            analysis.tools_used.append('dns-resolver')
+            
+            # 2. Email security (the main value for SMBs)
+            analysis.email_security, email_findings = self.analyze_email_security(domain)
+            all_findings.extend(email_findings)
+            analysis.tools_used.append('checkdmarc-style')
+            
+            # 3. Subdomain enumeration
+            if enable_subdomains:
+                analysis.subdomains, sub_findings = self.enumerate_subdomains(domain)
+                all_findings.extend(sub_findings)
+                analysis.tools_used.append('crt.sh')
+                analysis.tools_used.append('subdomain-bruteforce')
+            
+            # 4. DNSSEC check
+            analysis.dnssec, dnssec_findings = self.check_dnssec(domain)
+            all_findings.extend(dnssec_findings)
+            
+            # Store findings
+            analysis.findings = all_findings
+            
+            # Calculate risk score (inverted - higher score = more risk)
+            risk = 100 - analysis.email_security.overall_score
+            
+            # Add risk for issues
+            critical_count = len([f for f in all_findings if f.severity == 'critical'])
+            high_count = len([f for f in all_findings if f.severity == 'high'])
+            medium_count = len([f for f in all_findings if f.severity == 'medium'])
+            
+            risk = min(100, risk + (critical_count * 15) + (high_count * 10) + (medium_count * 5))
+            analysis.overall_risk_score = risk
+            
+            if risk >= 80:
+                analysis.risk_level = 'critical'
+            elif risk >= 60:
+                analysis.risk_level = 'high'
+            elif risk >= 40:
+                analysis.risk_level = 'medium'
+            elif risk >= 20:
+                analysis.risk_level = 'low'
+            else:
+                analysis.risk_level = 'minimal'
+            
+            # Generate executive summary
+            analysis.executive_summary = self._generate_summary(analysis)
+            analysis.quick_wins = self._generate_quick_wins(analysis)
+            
+        except Exception as e:
+            analysis.errors.append(str(e))
+            self.logger.error(f"Analysis error: {e}")
+        
+        analysis.scan_duration_seconds = time.time() - start_time
         return analysis
+    
+    def _generate_summary(self, analysis: DomainAnalysis) -> str:
+        """Generate SMB-friendly executive summary"""
+        grade = analysis.email_security.grade
+        
+        if grade in ['A+', 'A']:
+            return f"Great news! Your email security for {analysis.domain} is excellent ({grade}). Your emails should have good deliverability and your domain is well-protected against spoofing."
+        elif grade == 'B':
+            return f"Your email security for {analysis.domain} is good ({grade}), but there's room for improvement. A few configuration changes could boost your deliverability and protection."
+        elif grade == 'C':
+            return f"Your email security for {analysis.domain} needs attention ({grade}). Some of your emails may be landing in spam folders, and your domain has moderate spoofing risk."
+        else:
+            return f"Your email security for {analysis.domain} requires immediate attention ({grade}). Your emails are likely being flagged as spam, and your domain is vulnerable to spoofing attacks."
+    
+    def _generate_quick_wins(self, analysis: DomainAnalysis) -> List[str]:
+        """Generate actionable quick wins for SMBs"""
+        wins = []
+        
+        if not analysis.email_security.spf_valid:
+            wins.append("Add an SPF record to improve email deliverability")
+        
+        if not analysis.email_security.dkim_configured:
+            wins.append("Enable DKIM signing through your email provider")
+        
+        if not analysis.email_security.dmarc_valid:
+            wins.append("Add a DMARC record to monitor email authentication")
+        elif analysis.email_security.dmarc_policy == 'none':
+            wins.append("Upgrade DMARC policy from 'none' to 'quarantine' or 'reject'")
+        
+        if not analysis.dnssec.implemented:
+            wins.append("Enable DNSSEC for added DNS security")
+        
+        return wins[:3]  # Top 3 quick wins
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLI ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Iron City DNS Guard v4.0')
+    parser.add_argument('domain', help='Domain to analyze')
+    parser.add_argument('-c', '--client', default='Unknown', help='Client name')
+    parser.add_argument('-s', '--subdomains', action='store_true', default=True, help='Enable subdomain enumeration')
+    parser.add_argument('-o', '--output', help='Output file (JSON)')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
+    
+    args = parser.parse_args()
+    
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+    
+    analyzer = DNSGuardAnalyzer()
+    result = analyzer.analyze(
+        domain=args.domain,
+        client_name=args.client,
+        enable_subdomains=args.subdomains
+    )
+    
+    output = json.dumps(result.to_dict(), indent=2, default=str)
+    
+    if args.output:
+        with open(args.output, 'w') as f:
+            f.write(output)
+        print(f"Results written to {args.output}", file=sys.stderr)
+    else:
+        print(output)
+    
+    # Print summary
+    print(f"\n{'='*60}", file=sys.stderr)
+    print(f"  Domain: {result.domain}", file=sys.stderr)
+    print(f"  Email Grade: {result.email_security.grade}", file=sys.stderr)
+    print(f"  Risk Score: {result.overall_risk_score}/100", file=sys.stderr)
+    print(f"  Findings: {len(result.findings)}", file=sys.stderr)
+    print(f"  Subdomains: {len(result.subdomains)}", file=sys.stderr)
+    print(f"{'='*60}\n", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
