@@ -10,6 +10,17 @@ on:
         description: 'Client name'
         required: true
         default: 'Demo'
+      scan_id:
+        description: 'Unique scan identifier'
+        required: false
+      enable_subdomains:
+        description: 'Enable subdomain enumeration'
+        required: false
+        default: 'true'
+      enable_threat_intel:
+        description: 'Enable threat intelligence'
+        required: false
+        default: 'true'
 
 jobs:
   analyze:
@@ -29,73 +40,39 @@ jobs:
         id: scan
         run: |
           mkdir -p reports
-          python src/cli.py -d "${{ inputs.domain }}" -o ./reports
+          CMD="python src/cli.py -d '${{ inputs.domain }}' -c '${{ inputs.client_name }}' -o ./reports"
+          [ "${{ inputs.enable_subdomains }}" = "true" ] && CMD="$CMD -s"
+          [ "${{ inputs.enable_threat_intel }}" = "true" ] && CMD="$CMD -t -g"
+          echo "Running: $CMD"
+          eval $CMD
           REPORT=$(ls -t reports/*.json | head -1)
           echo "report_file=$REPORT" >> $GITHUB_OUTPUT
 
+      - name: Extract findings
+        id: extract
+        run: |
+          REPORT="${{ steps.scan.outputs.report_file }}"
+          FINDINGS=$(cat "$REPORT" | jq -c '.findings // []')
+          echo "findings_b64=$(echo "$FINDINGS" | base64 -w0)" >> $GITHUB_OUTPUT
+          [ "$FINDINGS" != "[]" ] && echo "has_findings=true" >> $GITHUB_OUTPUT || echo "has_findings=false" >> $GITHUB_OUTPUT
+
       - name: Post to QNAP API
-        id: post
         env:
           API_URL: https://api.ironcityit.com/ingest
           API_KEY: ${{ secrets.IRONCITY_API_KEY }}
         run: |
           REPORT="${{ steps.scan.outputs.report_file }}"
-          
-          # Build payload for QNAP API
-          jq --arg sid "${{ github.run_id }}" \
-             --arg dom "${{ inputs.domain }}" \
-             --arg client "${{ inputs.client_name }}" \
-             '{
-               scan_id: $sid,
-               client_name: $client,
-               product_id: "dnsguard",
-               target: $dom,
-               findings: (.findings // []),
-               records: (.records // []),
-               email_security: (.email_security // {}),
-               subdomains: (.subdomains // []),
-               raw_results: .
-             }' "$REPORT" > /tmp/payload.json
-          
-          # POST to QNAP
-          RESPONSE=$(curl -s -X POST "$API_URL" \
+          curl -X POST "$API_URL" \
             -H "Content-Type: application/json" \
             -H "X-API-Key: $API_KEY" \
-            -d @/tmp/payload.json)
-          
-          echo "Response: $RESPONSE"
-          echo "$RESPONSE" | jq -e '.success' && echo "✅ Posted to QNAP"
-
-      - name: Extract findings for AI
-        id: extract
-        run: |
-          REPORT="${{ steps.scan.outputs.report_file }}"
-          FINDINGS=$(jq -c '.findings // []' "$REPORT")
-          COUNT=$(echo "$FINDINGS" | jq 'length')
-          if [ "$COUNT" -gt 0 ]; then
-            echo "findings_b64=$(echo "$FINDINGS" | base64 -w0)" >> $GITHUB_OUTPUT
-            echo "has_findings=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_findings=false" >> $GITHUB_OUTPUT
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dns-report
-          path: reports/
+            -d @"$REPORT"
 
   ai-consensus:
     needs: analyze
     if: needs.analyze.outputs.has_findings == 'true'
     uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
     with:
-      findings_json: ${{ needs.analyze.outputs.findings_b64 }}
-      product: 'dns-guard'
-      client_id: ${{ inputs.client_name }}
+      findings_b64: ${{ needs.analyze.outputs.findings_b64 }}
       scan_id: ${{ needs.analyze.outputs.scan_id }}
-      api_url: https://api.ironcityit.com/ingest
-    secrets:
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      IRONCITY_API_KEY: ${{ secrets.IRONCITY_API_KEY }}
+      product: dnsguard
+    secrets: inherit
