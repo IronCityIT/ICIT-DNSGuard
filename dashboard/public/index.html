@@ -992,13 +992,49 @@
             document.getElementById('subdomains-count').textContent = (data.subdomains || []).length;
             document.getElementById('threat-count').textContent = data.threat_indicators || 0;
             
-            // AI Consensus
-            if (data.ai_consensus_severity) {
-                const severity = data.ai_consensus_severity;
-                const sevEl = document.getElementById('ai-severity');
+            // AI Consensus - Enhanced
+            const ai = data.ai_consensus || {};
+            if (data.ai_consensus_severity || ai.consensus_severity) {
+                const severity = data.ai_consensus_severity || ai.consensus_severity;
+                const sevEl = document.getElementById("ai-severity");
                 sevEl.textContent = severity;
-                sevEl.className = 'ai-stat-value severity-' + severity.toLowerCase();
-                document.getElementById('ai-confidence').textContent = (data.ai_confidence_percent || 0) + '%';
+                sevEl.className = "ai-stat-value severity-" + severity.toLowerCase();
+                document.getElementById("ai-confidence").textContent = (data.ai_confidence_percent || ai.confidence_percent || 0) + "%";
+                document.getElementById("ai-models-responded").textContent = (ai.successful_models || "?") + "/" + (ai.total_models || "15");
+                
+                // Voting distribution
+                const dist = ai.severity_distribution || {};
+                document.getElementById("vote-critical").textContent = dist.CRITICAL || 0;
+                document.getElementById("vote-high").textContent = dist.HIGH || 0;
+                document.getElementById("vote-medium").textContent = dist.MEDIUM || 0;
+                document.getElementById("vote-low").textContent = dist.LOW || 0;
+                document.getElementById("vote-info").textContent = dist.INFO || 0;
+                
+                // AI Remediation steps
+                const remList = document.getElementById("ai-remediation-list");
+                const remediation = ai.aggregated_remediation || [];
+                if (remediation.length > 0) {
+                    remList.innerHTML = remediation.map(r => "<li>" + r + "</li>").join("");
+                } else {
+                    document.getElementById("ai-remediation").style.display = "none";
+                }
+                
+                // Compliance mapping
+                const compGrid = document.getElementById("ai-compliance-grid");
+                const compliance = ai.compliance_mapping || {};
+                let compTags = [];
+                Object.entries(compliance).forEach(([framework, controls]) => {
+                    if (controls && controls.length > 0) {
+                        controls.forEach(c => compTags.push(framework + ": " + c));
+                    }
+                });
+                if (compTags.length > 0) {
+                    compGrid.innerHTML = compTags.map(t => "<span class=\"ai-compliance-tag\">" + t + "</span>").join("");
+                } else {
+                    document.getElementById("ai-compliance").style.display = "none";
+                }
+            } else {
+                document.getElementById("ai-consensus").style.display = "none";
             }
             
             // Findings
