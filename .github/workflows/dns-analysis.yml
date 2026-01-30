@@ -33,18 +33,40 @@ jobs:
           REPORT=$(ls -t reports/*.json | head -1)
           echo "report_file=$REPORT" >> $GITHUB_OUTPUT
 
-      - name: Post initial results to Firestore
+      - name: Post to QNAP API
         id: post
         env:
-          CLOUD_FUNCTION_URL: ${{ secrets.DNSGUARD_CLOUD_FUNCTION_URL }}
+          API_URL: https://api.ironcityit.com/ingest
+          API_KEY: ${{ secrets.IRONCITY_API_KEY }}
         run: |
           REPORT="${{ steps.scan.outputs.report_file }}"
-          jq --arg sid "${{ github.run_id }}" --arg dom "${{ inputs.domain }}" \
-            '. + {scan_id: $sid, domain: $dom}' "$REPORT" > /tmp/upload.json
-          curl -s -X POST "$CLOUD_FUNCTION_URL" -H "Content-Type: application/json" -d @/tmp/upload.json
-          echo "Posted initial scan"
+          
+          # Build payload for QNAP API
+          jq --arg sid "${{ github.run_id }}" \
+             --arg dom "${{ inputs.domain }}" \
+             --arg client "${{ inputs.client_name }}" \
+             '{
+               scan_id: $sid,
+               client_name: $client,
+               product_id: "dnsguard",
+               target: $dom,
+               findings: (.findings // []),
+               records: (.records // []),
+               email_security: (.email_security // {}),
+               subdomains: (.subdomains // []),
+               raw_results: .
+             }' "$REPORT" > /tmp/payload.json
+          
+          # POST to QNAP
+          RESPONSE=$(curl -s -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: $API_KEY" \
+            -d @/tmp/payload.json)
+          
+          echo "Response: $RESPONSE"
+          echo "$RESPONSE" | jq -e '.success' && echo "✅ Posted to QNAP"
 
-      - name: Extract findings
+      - name: Extract findings for AI
         id: extract
         run: |
           REPORT="${{ steps.scan.outputs.report_file }}"
@@ -71,8 +93,9 @@ jobs:
       product: 'dns-guard'
       client_id: ${{ inputs.client_name }}
       scan_id: ${{ needs.analyze.outputs.scan_id }}
-      firestore_url: ${{ vars.DNSGUARD_CLOUD_FUNCTION_URL }}
+      api_url: https://api.ironcityit.com/ingest
     secrets:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      IRONCITY_API_KEY: ${{ secrets.IRONCITY_API_KEY }}
