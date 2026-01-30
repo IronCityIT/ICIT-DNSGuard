@@ -72,8 +72,7 @@ jobs:
     if: needs.analyze.outputs.has_findings == 'true'
     uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
     with:
-      findings_b64: ${{ needs.analyze.outputs.findings_b64 }}
+      findings_json: ${{ needs.analyze.outputs.findings_b64 }}
       scan_id: ${{ needs.analyze.outputs.scan_id }}
       product: dnsguard
     secrets: inherit
-# Updated Fri Jan 30 02:48:54 PM UTC 2026
