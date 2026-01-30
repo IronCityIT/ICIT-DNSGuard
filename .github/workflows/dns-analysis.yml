@@ -1,4 +1,5 @@
 name: DNS Guard - Security Analysis
+
 on:
   workflow_dispatch:
     inputs:
@@ -16,15 +17,22 @@ on:
         description: 'Enable threat intelligence'
         default: true
         type: boolean
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    outputs:
+      findings: ${{ steps.scan.outputs.findings }}
+      report_file: ${{ steps.scan.outputs.report_file }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.11', cache: 'pip'}
+        with:
+          python-version: '3.11'
+          cache: 'pip'
       - run: pip install -r requirements.txt
-      - name: Run Analysis
+      
+      - name: Run DNS Analysis
         id: scan
         env:
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
@@ -37,22 +45,56 @@ jobs:
           eval $CMD
           REPORT=$(ls -t reports/*.json | head -1)
           echo "report_file=$REPORT" >> $GITHUB_OUTPUT
+          # Extract findings for consensus engine
+          FINDINGS=$(cat "$REPORT" | jq -c '.findings // []')
+          echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
+
+  ai-consensus:
+    needs: analyze
+    if: needs.analyze.outputs.findings != '[]'
+    uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
+    with:
+      findings_json: ${{ needs.analyze.outputs.findings }}
+      product: 'dns-guard'
+      client_id: ${{ inputs.client_name }}
+    secrets:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+  post-results:
+    needs: [analyze, ai-consensus]
+    if: always() && needs.analyze.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Merge AI Consensus into Results
+        run: |
+          REPORT="${{ needs.analyze.outputs.report_file }}"
+          CONSENSUS='${{ needs.ai-consensus.outputs.consensus_result }}'
+          
+          if [ -n "$CONSENSUS" ] && [ "$CONSENSUS" != "null" ]; then
+            echo "🤖 Adding AI Consensus to results..."
+            jq --argjson ai "$CONSENSUS" '. + {ai_consensus: $ai, ai_consensus_severity: $ai.consensus_severity, ai_confidence_percent: $ai.confidence_percent}' "$REPORT" > /tmp/final.json
+            mv /tmp/final.json "$REPORT"
+          fi
+          
       - name: Post Results to Firebase
         env:
           CLOUD_FUNCTION_URL: ${{ secrets.DNSGUARD_CLOUD_FUNCTION_URL }}
         run: |
-          REPORT="${{ steps.scan.outputs.report_file }}"
+          REPORT="${{ needs.analyze.outputs.report_file }}"
           if [ -z "$CLOUD_FUNCTION_URL" ]; then
-            echo "⚠️ DNSGUARD_CLOUD_FUNCTION_URL not set, skipping"
+            echo "⚠️ DNSGUARD_CLOUD_FUNCTION_URL not set"
             exit 0
           fi
           if [ -f "$REPORT" ]; then
             echo "📤 Posting results to Firebase..."
-            curl -s -X POST "$CLOUD_FUNCTION_URL" \
-              -H "Content-Type: application/json" \
-              -d @"$REPORT"
+            curl -s -X POST "$CLOUD_FUNCTION_URL" -H "Content-Type: application/json" -d @"$REPORT"
             echo "✅ Done"
           fi
+          
       - uses: actions/upload-artifact@v4
         with:
           name: dnsguard-${{ inputs.domain }}
