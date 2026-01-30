@@ -26,7 +26,7 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     outputs:
-      findings_b64: ${{ steps.extract.outputs.findings_b64 }}
+      findings_json: ${{ steps.extract.outputs.findings_json }}
       has_findings: ${{ steps.extract.outputs.has_findings }}
       scan_id: ${{ github.run_id }}
     steps:
@@ -53,7 +53,10 @@ jobs:
         run: |
           REPORT="${{ steps.scan.outputs.report_file }}"
           FINDINGS=$(cat "$REPORT" | jq -c '.findings // []')
-          echo "findings_b64=$(echo "$FINDINGS" | base64 -w0)" >> $GITHUB_OUTPUT
+          EOF_MARKER=$(openssl rand -hex 8)
+          echo "findings_json<<$EOF_MARKER" >> $GITHUB_OUTPUT
+          echo "$FINDINGS" >> $GITHUB_OUTPUT
+          echo "$EOF_MARKER" >> $GITHUB_OUTPUT
           [ "$FINDINGS" != "[]" ] && echo "has_findings=true" >> $GITHUB_OUTPUT || echo "has_findings=false" >> $GITHUB_OUTPUT
 
       - name: Post to QNAP API
@@ -72,7 +75,7 @@ jobs:
     if: needs.analyze.outputs.has_findings == 'true'
     uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
     with:
-      findings_json: ${{ needs.analyze.outputs.findings_b64 }}
+      findings_json: ${{ needs.analyze.outputs.findings_json }}
       scan_id: ${{ needs.analyze.outputs.scan_id }}
       product: dnsguard
     secrets: inherit
