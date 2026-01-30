@@ -6,8 +6,26 @@
     <title>Iron City DNS Guard - Free DNS Security Assessment</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+        async function loadDemoData() {
+            try {
+                const snapshot = await db.collection("scans").where("domain", "==", "testphp.vulnweb.com").limit(1).get();
+                if (!snapshot.empty) { displayResults(snapshot.docs[0].data()); }
+            } catch (e) { console.log("Demo load:", e); }
+        }
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+        async function loadDemoData() {
+            try {
+                const snapshot = await db.collection("scans").where("domain", "==", "testphp.vulnweb.com").limit(1).get();
+                if (!snapshot.empty) { displayResults(snapshot.docs[0].data()); }
+            } catch (e) { console.log("Demo load:", e); }
+        }
     <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+        async function loadDemoData() {
+            try {
+                const snapshot = await db.collection("scans").where("domain", "==", "testphp.vulnweb.com").limit(1).get();
+                if (!snapshot.empty) { displayResults(snapshot.docs[0].data()); }
+            } catch (e) { console.log("Demo load:", e); }
+        }
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
@@ -490,6 +508,36 @@
             text-transform: uppercase;
         }
         .severity-pill.critical { background: var(--critical); color: #fff; }
+        /* Enhanced AI Consensus */
+        .ai-voting { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 15px 0; }
+        .ai-vote { background: var(--bg-card); padding: 8px; border-radius: 6px; text-align: center; font-size: 0.75rem; }
+        .ai-vote-count { font-size: 1.2rem; font-weight: 700; font-family: "JetBrains Mono", monospace; }
+        .ai-vote.critical .ai-vote-count { color: var(--critical); }
+        .ai-vote.high .ai-vote-count { color: var(--high); }
+        .ai-vote.medium .ai-vote-count { color: var(--medium); }
+        .ai-vote.low .ai-vote-count { color: var(--low); }
+        .ai-vote.info .ai-vote-count { color: var(--info); }
+        .ai-remediation { margin-top: 15px; }
+        .ai-remediation-title { color: var(--gold); font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+        .ai-remediation-list { list-style: none; padding: 0; }
+        .ai-remediation-list li { padding: 8px 12px; background: var(--bg-card); margin-bottom: 6px; border-radius: 6px; border-left: 3px solid var(--gold); font-size: 0.9rem; }
+        .ai-compliance { margin-top: 15px; }
+        .ai-compliance-title { color: var(--accent-blue); font-weight: 600; margin-bottom: 10px; }
+        .ai-compliance-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+        .ai-compliance-tag { background: rgba(0, 212, 255, 0.1); color: var(--accent-blue); padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-family: "JetBrains Mono", monospace; }
+        /* Expandable Findings */
+        .finding-row { cursor: pointer; transition: background 0.2s; }
+        .finding-row:hover { background: var(--bg-card-alt); }
+        .finding-row td:first-child::before { content: "▶ "; font-size: 0.7rem; color: var(--text-muted); }
+        .finding-row.expanded td:first-child::before { content: "▼ "; }
+        .finding-detail { display: none; background: linear-gradient(135deg, rgba(168, 85, 247, 0.05), rgba(0, 212, 255, 0.05)); }
+        .finding-detail.show { display: table-row; }
+        .finding-detail-content { padding: 20px; }
+        .finding-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 800px) { .finding-detail-grid { grid-template-columns: 1fr; } }
+        .finding-ai-box { background: var(--bg-card); padding: 15px; border-radius: 8px; }
+        .finding-ai-title { color: var(--accent-purple); font-weight: 600; margin-bottom: 10px; font-size: 0.85rem; }
+        .finding-ai-reasoning { color: var(--text-muted); font-size: 0.85rem; line-height: 1.6; }
         .severity-pill.high { background: var(--high); color: #fff; }
         .severity-pill.medium { background: var(--medium); color: #000; }
         .severity-pill.low { background: var(--low); color: #000; }
@@ -658,37 +706,41 @@
                     <div class="status-icon">🔒</div>
                     <div class="status-indicator invalid" id="dnssec-status">✗</div>
                     <div class="status-label">DNSSEC</div>
-                </div>
-                <div class="status-item">
-                    <div class="status-icon">🌐</div>
-                    <div class="status-indicator value" id="subdomains-count">0</div>
-                    <div class="status-label">Subdomains</div>
-                </div>
-                <div class="status-item">
-                    <div class="status-icon">⚠️</div>
-                    <div class="status-indicator value" id="threat-count">0</div>
-                    <div class="status-label">Threats</div>
-                </div>
-            </div>
-            
-            <!-- Charts -->
-            <div class="charts-grid">
-                <div class="chart-container">
-                    <div class="chart-title">📊 Finding Severity Distribution</div>
-                    <div class="chart-wrapper">
-                        <canvas id="severity-chart"></canvas>
-                    </div>
-                </div>
-                <div class="chart-container">
-                    <div class="chart-title">📈 Security Score Trend</div>
-                    <div class="chart-wrapper">
-                        <canvas id="trend-chart"></canvas>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- AI Consensus Engine -->
             <div class="ai-consensus" id="ai-consensus">
+                <div class="ai-header">
+                    <div class="ai-title"><span>🤖</span> AI Consensus Engine™</div>
+                    <div class="ai-badge" id="ai-models">15 AI Models</div>
+                </div>
+                <div class="ai-stats">
+                    <div class="ai-stat">
+                        <div class="ai-stat-value severity-high" id="ai-severity">--</div>
+                        <div class="ai-stat-label">Consensus Severity</div>
+                    </div>
+                    <div class="ai-stat">
+                        <div class="ai-stat-value" style="color: var(--accent-blue)" id="ai-confidence">--%</div>
+                        <div class="ai-stat-label">Confidence</div>
+                    </div>
+                    <div class="ai-stat">
+                        <div class="ai-stat-value" style="color: var(--gold)" id="ai-models-responded">--/15</div>
+                        <div class="ai-stat-label">Models Responded</div>
+                    </div>
+                </div>
+                <div class="ai-voting" id="ai-voting">
+                    <div class="ai-vote critical"><div class="ai-vote-count" id="vote-critical">0</div><div>CRITICAL</div></div>
+                    <div class="ai-vote high"><div class="ai-vote-count" id="vote-high">0</div><div>HIGH</div></div>
+                    <div class="ai-vote medium"><div class="ai-vote-count" id="vote-medium">0</div><div>MEDIUM</div></div>
+                    <div class="ai-vote low"><div class="ai-vote-count" id="vote-low">0</div><div>LOW</div></div>
+                    <div class="ai-vote info"><div class="ai-vote-count" id="vote-info">0</div><div>INFO</div></div>
+                </div>
+                <div class="ai-remediation" id="ai-remediation">
+                    <div class="ai-remediation-title">🔧 AI-Recommended Actions</div>
+                    <ul class="ai-remediation-list" id="ai-remediation-list"></ul>
+                </div>
+                <div class="ai-compliance" id="ai-compliance">
+                    <div class="ai-compliance-title">📋 Compliance Framework Mapping</div>
+                    <div class="ai-compliance-grid" id="ai-compliance-grid"></div>
+                </div>
+            </div>
                 <div class="ai-header">
                     <div class="ai-title">
                         <span>🤖</span> AI Consensus Engine™
@@ -830,7 +882,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             initCharts();
             
-            if (scanId) {
+            if (scanId) { loadScan(scanId); } else { loadDemoData(); } // FIXED: was: if (scanId) {SKIPME
                 document.getElementById('demo-banner').classList.add('hidden');
                 loadScan(scanId);
             }
@@ -902,7 +954,7 @@
             document.getElementById('results').classList.add('hidden');
             
             try {
-                const doc = await db.collection('scans').doc(id).get();
+                const snapshot = await db.collection('scans').where('scan_id', '==', id).limit(1).get(); const doc = snapshot.empty ? null : { exists: true, data: () => snapshot.docs[0].data() };
                 if (doc.exists) {
                     displayResults(doc.data());
                 } else {
@@ -1081,6 +1133,12 @@
         document.getElementById('email-input').addEventListener('keypress', e => {
             if (e.key === 'Enter') startScan();
         });
+        async function loadDemoData() {
+            try {
+                const snapshot = await db.collection("scans").where("domain", "==", "testphp.vulnweb.com").limit(1).get();
+                if (!snapshot.empty) { displayResults(snapshot.docs[0].data()); }
+            } catch (e) { console.log("Demo load:", e); }
+        }
     </script>
 </body>
 </html>
