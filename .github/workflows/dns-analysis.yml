@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       findings_b64: ${{ steps.extract.outputs.findings_b64 }}
-      report_json: ${{ steps.extract.outputs.report_json }}
       has_findings: ${{ steps.extract.outputs.has_findings }}
+      scan_id: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +33,17 @@ jobs:
           REPORT=$(ls -t reports/*.json | head -1)
           echo "report_file=$REPORT" >> $GITHUB_OUTPUT
 
+      - name: Post initial results to Firestore
+        id: post
+        env:
+          CLOUD_FUNCTION_URL: ${{ secrets.DNSGUARD_CLOUD_FUNCTION_URL }}
+        run: |
+          REPORT="${{ steps.scan.outputs.report_file }}"
+          jq --arg sid "${{ github.run_id }}" --arg dom "${{ inputs.domain }}" \
+            '. + {scan_id: $sid, domain: $dom}' "$REPORT" > /tmp/upload.json
+          curl -s -X POST "$CLOUD_FUNCTION_URL" -H "Content-Type: application/json" -d @/tmp/upload.json
+          echo "Posted initial scan"
+
       - name: Extract findings
         id: extract
         run: |
@@ -45,7 +56,6 @@ jobs:
           else
             echo "has_findings=false" >> $GITHUB_OUTPUT
           fi
-          echo "report_json=$(cat "$REPORT" | base64 -w0)" >> $GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v4
         with:
@@ -60,33 +70,9 @@ jobs:
       findings_json: ${{ needs.analyze.outputs.findings_b64 }}
       product: 'dns-guard'
       client_id: ${{ inputs.client_name }}
+      scan_id: ${{ needs.analyze.outputs.scan_id }}
+      firestore_url: ${{ vars.DNSGUARD_CLOUD_FUNCTION_URL }}
     secrets:
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-  post-results:
-    needs: [analyze, ai-consensus]
-    if: always() && needs.analyze.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Merge and post
-        env:
-          CLOUD_FUNCTION_URL: ${{ secrets.DNSGUARD_CLOUD_FUNCTION_URL }}
-        run: |
-          echo "${{ needs.analyze.outputs.report_json }}" | base64 -d > /tmp/report.json
-          
-          CONSENSUS_B64="${{ needs.ai-consensus.outputs.consensus_result }}"
-          if [ -n "$CONSENSUS_B64" ]; then
-            echo "$CONSENSUS_B64" | base64 -d > /tmp/consensus.json
-            # Get first element if array
-            FIRST=$(jq 'if type == "array" then .[0] else . end' /tmp/consensus.json)
-            jq --argjson ai "$FIRST" '. + {ai_consensus: $ai, ai_consensus_severity: $ai.consensus_severity, ai_confidence_percent: $ai.confidence_percent}' /tmp/report.json > /tmp/final.json
-          else
-            cp /tmp/report.json /tmp/final.json
-          fi
-          
-          jq --arg sid "${{ github.run_id }}" --arg dom "${{ inputs.domain }}" '. + {scan_id: $sid, domain: $dom}' /tmp/final.json > /tmp/upload.json
-          cat /tmp/upload.json
-          
-          [ -n "$CLOUD_FUNCTION_URL" ] && curl -s -X POST "$CLOUD_FUNCTION_URL" -H "Content-Type: application/json" -d @/tmp/upload.json
