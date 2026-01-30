@@ -9,6 +9,7 @@ on:
       client_name:
         description: 'Client name'
         required: true
+        default: 'Demo'
       enable_subdomains:
         description: 'Enable subdomain enumeration'
         default: true
@@ -22,16 +23,19 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     outputs:
-      findings: ${{ steps.scan.outputs.findings }}
-      report_file: ${{ steps.scan.outputs.report_file }}
+      findings_b64: ${{ steps.extract.outputs.findings_b64 }}
+      report_json: ${{ steps.extract.outputs.report_json }}
+      has_findings: ${{ steps.extract.outputs.has_findings }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
-      - run: pip install -r requirements.txt
-      
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt || pip install dnspython requests
+
       - name: Run DNS Analysis
         id: scan
         env:
@@ -39,22 +43,39 @@ jobs:
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
         run: |
           mkdir -p reports
-          CMD="python src/cli.py -d '${{ inputs.domain }}' -c '${{ inputs.client_name }}' -o ./reports"
-          [ "${{ inputs.enable_subdomains }}" = "true" ] && CMD="$CMD -s"
-          [ "${{ inputs.enable_threat_intel }}" = "true" ] && CMD="$CMD -t -g"
-          eval $CMD
+          python src/cli.py -d "${{ inputs.domain }}" -o ./reports
           REPORT=$(ls -t reports/*.json | head -1)
           echo "report_file=$REPORT" >> $GITHUB_OUTPUT
-          # Extract findings for consensus engine
+
+      - name: Extract findings as base64
+        id: extract
+        run: |
+          REPORT="${{ steps.scan.outputs.report_file }}"
           FINDINGS=$(cat "$REPORT" | jq -c '.findings // []')
-          echo "findings=$FINDINGS" >> $GITHUB_OUTPUT
+          COUNT=$(echo "$FINDINGS" | jq 'length')
+          echo "Found $COUNT findings"
+          if [ "$COUNT" -gt 0 ]; then
+            ENCODED=$(echo "$FINDINGS" | base64 -w0)
+            echo "findings_b64=$ENCODED" >> $GITHUB_OUTPUT
+            echo "has_findings=true" >> $GITHUB_OUTPUT
+          else
+            echo "findings_b64=" >> $GITHUB_OUTPUT
+            echo "has_findings=false" >> $GITHUB_OUTPUT
+          fi
+          REPORT_B64=$(cat "$REPORT" | base64 -w0)
+          echo "report_json=$REPORT_B64" >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dns-report
+          path: reports/
 
   ai-consensus:
     needs: analyze
-    if: needs.analyze.outputs.findings != '[]'
+    if: needs.analyze.outputs.has_findings == 'true'
     uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
     with:
-      findings_json: ${{ needs.analyze.outputs.findings }}
+      findings_json: ${{ needs.analyze.outputs.findings_b64 }}
       product: 'dns-guard'
       client_id: ${{ inputs.client_name }}
     secrets:
@@ -67,35 +88,29 @@ jobs:
     if: always() && needs.analyze.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Merge AI Consensus into Results
-        run: |
-          REPORT="${{ needs.analyze.outputs.report_file }}"
-          CONSENSUS='${{ needs.ai-consensus.outputs.consensus_result }}'
-          
-          if [ -n "$CONSENSUS" ] && [ "$CONSENSUS" != "null" ]; then
-            echo "🤖 Adding AI Consensus to results..."
-            jq --argjson ai "$CONSENSUS" '. + {ai_consensus: $ai, ai_consensus_severity: $ai.consensus_severity, ai_confidence_percent: $ai.confidence_percent}' "$REPORT" > /tmp/final.json
-            mv /tmp/final.json "$REPORT"
-          fi
-          
-      - name: Post Results to Firebase
+      - name: Merge and post results
         env:
           CLOUD_FUNCTION_URL: ${{ secrets.DNSGUARD_CLOUD_FUNCTION_URL }}
         run: |
-          REPORT="${{ needs.analyze.outputs.report_file }}"
-          if [ -z "$CLOUD_FUNCTION_URL" ]; then
-            echo "⚠️ DNSGUARD_CLOUD_FUNCTION_URL not set"
-            exit 0
-          fi
-          if [ -f "$REPORT" ]; then
-            echo "📤 Posting results to Firebase..."
-            curl -s -X POST "$CLOUD_FUNCTION_URL" -H "Content-Type: application/json" -d @"$REPORT"
-            echo "✅ Done"
+          echo "${{ needs.analyze.outputs.report_json }}" | base64 -d > /tmp/report.json
+          
+          CONSENSUS_B64="${{ needs.ai-consensus.outputs.consensus_result }}"
+          if [ -n "$CONSENSUS_B64" ]; then
+            echo "$CONSENSUS_B64" | base64 -d > /tmp/consensus.json
+            jq -s '.[0] + {
+              ai_consensus: .[1],
+              ai_consensus_severity: .[1].consensus_severity,
+              ai_confidence_percent: .[1].confidence_percent
+            }' /tmp/report.json /tmp/consensus.json > /tmp/final.json
+          else
+            cp /tmp/report.json /tmp/final.json
           fi
           
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dnsguard-${{ inputs.domain }}
-          path: reports/
+          jq --arg sid "${{ github.run_id }}" --arg dom "${{ inputs.domain }}" \
+            '. + {scan_id: $sid, domain: $dom}' /tmp/final.json > /tmp/upload.json
+          
+          cat /tmp/upload.json
+          
+          if [ -n "$CLOUD_FUNCTION_URL" ]; then
+            curl -s -X POST "$CLOUD_FUNCTION_URL" -H "Content-Type: application/json" -d @/tmp/upload.json
+          fi
