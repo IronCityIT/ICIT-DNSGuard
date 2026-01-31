@@ -63,10 +63,11 @@ jobs:
           API_KEY: ${{ secrets.IRONCITY_API_KEY }}
         run: |
           REPORT="${{ steps.scan.outputs.report_file }}"
+          jq '. + {product_id: "dnsguard", target: .domain}' "$REPORT" > /tmp/report.json
           curl -X POST "$API_URL" \
             -H "Content-Type: application/json" \
             -H "X-API-Key: $API_KEY" \
-            -d @"$REPORT"
+            -d @/tmp/report.json
 
   ai-consensus:
     needs: analyze
