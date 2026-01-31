@@ -28,7 +28,7 @@ jobs:
     outputs:
       findings_b64: ${{ steps.extract.outputs.findings_b64 }}
       has_findings: ${{ steps.extract.outputs.has_findings }}
-      scan_id: ${{ github.run_id }}
+      scan_id: ${{ steps.post.outputs.scan_id }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -58,16 +58,20 @@ jobs:
           [ "$FINDINGS" != "[]" ] && echo "has_findings=true" >> $GITHUB_OUTPUT || echo "has_findings=false" >> $GITHUB_OUTPUT
 
       - name: Post to QNAP API
+        id: post
         env:
           API_URL: https://api.ironcityit.com/ingest
           API_KEY: ${{ secrets.IRONCITY_API_KEY }}
         run: |
           REPORT="${{ steps.scan.outputs.report_file }}"
           jq '. + {product_id: "dnsguard", target: .domain}' "$REPORT" > /tmp/report.json
-          curl -X POST "$API_URL" \
+          RESPONSE=$(curl -s -X POST "$API_URL" \
             -H "Content-Type: application/json" \
             -H "X-API-Key: $API_KEY" \
-            -d @/tmp/report.json
+            -d @/tmp/report.json)
+          echo "$RESPONSE"
+          SCAN_ID=$(echo "$RESPONSE" | jq -r '.scan_id')
+          echo "scan_id=$SCAN_ID" >> $GITHUB_OUTPUT
 
   ai-consensus:
     needs: analyze
