@@ -60,8 +60,15 @@ functions.http('triggerDNSScan', async (req, res) => {
       return res.status(400).json({ error: 'Please use your work email address' });
     }
     
-    // Clean domain
-    const cleanDomain = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+    // Clean domain, then PROVE it is a hostname. This endpoint is public and
+    // unauthenticated, and its output reaches a command line in CI — stripping
+    // the scheme is not validation. Anything that is not a plain hostname is
+    // rejected here as well as in the workflow.
+    const cleanDomain = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0].trim();
+    const hostnameRe = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+    if (!hostnameRe.test(cleanDomain) || cleanDomain.length > 253) {
+      return res.status(400).json({ error: 'Please enter a valid domain name' });
+    }
     
     // Generate unique scan ID
     const scanId = `scan-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -72,13 +79,23 @@ functions.http('triggerDNSScan', async (req, res) => {
     });
     
     // 2. Store initial scan record in Firestore
+    // The dashboard queries `where('scan_id','==',id)`, so scan_id must exist as
+    // a FIELD, not only as the document id. Without it every poll returned empty
+    // and the free scan span forever. `timestamp` is written for the same reason:
+    // the dashboard's fallback query orders by it, and a document missing the
+    // field is excluded from an orderBy result entirely.
+    const nowIso = new Date().toISOString();
     const scanDoc = {
+      scan_id: scanId,
       domain: cleanDomain,
+      target: cleanDomain,
       email: email,
       status: 'queued',
-      created_at: new Date().toISOString(),
+      created_at: nowIso,
+      timestamp: nowIso,
       source: 'free-scan',
-      client_name: 'Free Scan User'
+      client_name: 'Free Scan User',
+      client_id: 'free-scan'
     };
     
     await firestore.collection('scans').doc(scanId).set(scanDoc);
@@ -86,6 +103,9 @@ functions.http('triggerDNSScan', async (req, res) => {
     
     // 3. Trigger GitHub workflow
     const workflowTriggered = await triggerGitHubWorkflow(cleanDomain, scanId);
+    // NOTE: scanId is now forwarded as a workflow input (see below). Previously
+    // it was not, so the workflow minted its own id and the queued document was
+    // never updated by anything.
     
     if (!workflowTriggered) {
       // Update scan status to failed
@@ -103,8 +123,11 @@ functions.http('triggerDNSScan', async (req, res) => {
     });
     
     // Return scan ID for polling
+    // scan_id is what the dashboard polls on. Omitting it made the caller poll
+    // for `undefined`, which never matched anything.
     return res.status(200).json({
       success: true,
+      scan_id: scanId,
       domain: cleanDomain,
       message: 'Scan started successfully',
       poll_url: `https://icit-dnsguard.web.app/?scan=${scanId}`
@@ -133,14 +156,33 @@ functions.http('storeScanResults', async (req, res) => {
   try {
     const scanData = req.body;
     const scanId = scanData.scan_id;
-    
-    scanData.status = 'complete';
+
+    // The workflow reports its own outcome. Forcing 'complete' here used to make
+    // a failed scan indistinguishable from a successful one in the dashboard.
+    const reported = scanData.status === 'failed' ? 'failed' : 'complete';
+    scanData.status = reported;
     scanData.completed_at = new Date().toISOString();
-    
+
     if (scanId) {
+      const ref = firestore.collection('scans').doc(scanId);
+
+      // Status is monotonic. The workflow reports a failure whenever ANY job in
+      // the run failed, which includes a run whose scan succeeded and whose
+      // analysis did not — that run has already stored real findings here, and
+      // overwriting them with an empty failure record would lose them.
+      if (reported === 'failed') {
+        const existing = await ref.get();
+        if (existing.exists && existing.get('status') === 'complete') {
+          await ref.set({ error: scanData.error || { message: 'a stage of this run failed' } },
+                        { merge: true });
+          console.log(`Failure report ignored — scan already complete: ${scanId}`);
+          return res.status(200).json({ success: true, id: scanId, status: 'already_complete' });
+        }
+      }
+
       // Update existing scan document
-      await firestore.collection('scans').doc(scanId).set(scanData, { merge: true });
-      console.log(`Updated scan: ${scanId}`);
+      await ref.set(scanData, { merge: true });
+      console.log(`Updated scan: ${scanId} (${reported})`);
     } else {
       // Create new document (fallback for manual runs)
       const docRef = await firestore.collection('scans').add({
@@ -182,7 +224,11 @@ functions.http('getScanStatus', async (req, res) => {
       return res.status(404).json({ error: 'Scan not found' });
     }
     
-    return res.status(200).json(doc.data());
+    // This endpoint is public (CORS *) and unauthenticated. Returning the raw
+    // document handed out the submitter's email address to anyone holding a
+    // scan id, so the response is now field-limited to the scan itself.
+    const { email, ...safe } = doc.data();
+    return res.status(200).json(safe);
     
   } catch (error) {
     console.error('Error getting scan:', error);
@@ -255,6 +301,7 @@ async function triggerGitHubWorkflow(domain, scanId) {
           inputs: {
             domain: domain,
             client_name: 'Free Scan User',
+            scan_id: scanId,
             enable_subdomains: 'true',
             enable_threat_intel: 'true'
           }
