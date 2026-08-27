@@ -57,21 +57,95 @@ jobs:
           echo "findings_b64=$FINDINGS_B64" >> $GITHUB_OUTPUT
           [ "$FINDINGS" != "[]" ] && echo "has_findings=true" >> $GITHUB_OUTPUT || echo "has_findings=false" >> $GITHUB_OUTPUT
 
-      - name: Post to QNAP API
+      # Scan results are client data and belong in Firestore via storeScanResults,
+      # not in the QNAP ingest API. The scan_id is therefore minted here rather than
+      # being handed back by QNAP's response, which is what used to define it.
+      - name: Resolve scan identifier
         id: post
         env:
-          API_URL: https://api.ironcityit.com/ingest
-          API_KEY: ${{ secrets.IRONCITY_API_KEY }}
+          SCAN_ID_IN: ${{ inputs.scan_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          REPORT="${{ steps.scan.outputs.report_file }}"
-          jq '. + {product_id: "dnsguard", target: .domain}' "$REPORT" > /tmp/report.json
-          RESPONSE=$(curl -s -X POST "$API_URL" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: $API_KEY" \
-            -d @/tmp/report.json)
-          echo "$RESPONSE"
-          SCAN_ID=$(echo "$RESPONSE" | jq -r '.scan_id')
-          echo "scan_id=$SCAN_ID" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          SCAN_ID="${SCAN_ID_IN:-}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="dnsguard-${RUN_ID}"
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+          echo "scan_id: $SCAN_ID"
+
+      - name: Build storeScanResults payload
+        id: payload
+        env:
+          SCAN_ID: ${{ steps.post.outputs.scan_id }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          TARGET: ${{ inputs.domain }}
+          REPORT: ${{ steps.scan.outputs.report_file }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEOF'
+          import json, os, datetime, re
+
+          with open(os.environ["REPORT"]) as fh:
+              report = json.load(fh)
+
+          findings = report.get("findings", []) or []
+          summary = {"total": len(findings)}
+          for f in findings:
+              sev = str(f.get("severity", "info")).lower()
+              summary[sev] = summary.get(sev, 0) + 1
+
+          client_name = os.environ["CLIENT_NAME"]
+          client_id = re.sub(r"-+", "-", re.sub(r"[^a-z0-9]", "-", client_name.lower())).strip("-")
+          if not client_id:
+              raise SystemExit(f"client_name '{client_name}' does not yield a usable client_id")
+
+          payload = {
+              "scan_type": "dns_email_security",
+              "scan_id": os.environ["SCAN_ID"],
+              "client_id": client_id,
+              "client_name": client_name,
+              "target": os.environ["TARGET"],
+              "status": "completed",
+              "summary": summary,
+              "findings": findings,
+              # The SMB-facing grades are the product's headline output, so they travel
+              # with the findings rather than being recomputed by the dashboard.
+              "grades": {
+                  k: report.get(k)
+                  for k in ("overall_grade", "email_grade", "spf", "dkim", "dmarc")
+                  if report.get(k) is not None
+              },
+              "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          with open("payload.json", "w") as fh:
+              json.dump(payload, fh)
+          print(f"payload: {summary['total']} findings, client_id={client_id}")
+          PYEOF
+          [ "$(head -c 1 payload.json)" = "{" ] || { echo "::error::payload.json malformed"; exit 1; }
+          python3 -m json.tool payload.json > /dev/null
+
+      # Fails closed. A scan whose results are not stored is a failed scan, however
+      # healthy the log looks.
+      - name: POST to storeScanResults
+        env:
+          STORE_URL: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+        run: |
+          set -euo pipefail
+          # Default is the deployed endpoint this repo's own Cloud Function already
+          # targets (cloud-function/index.js STORE_RESULTS_URL) — a published value in
+          # this repository, not an invented secret.
+          URL="${STORE_URL:-https://storescanresults-43248247502.us-east5.run.app}"
+          case "$URL" in
+            https://*.run.app*|https://*.cloudfunctions.net/storeScanResults) ;;
+            *) echo "::error::refusing to POST scan results to a non-storeScanResults endpoint: $URL"; exit 1 ;;
+          esac
+          HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$URL" \
+            -H "Content-Type: application/json" --data @payload.json)
+          echo "storeScanResults responded HTTP $HTTP_CODE"
+          cat response.txt || true
+          case "$HTTP_CODE" in
+            2*) echo "Results stored" ;;
+            *)  echo "::error::store POST rejected (HTTP $HTTP_CODE)"; exit 1 ;;
+          esac
 
   ai-consensus:
     needs: analyze
