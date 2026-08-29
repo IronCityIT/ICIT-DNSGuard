@@ -549,21 +549,53 @@
             btn.innerHTML = '<span>🚀</span> Run Free Assessment';
         }
         
+        function showScanError(message) {
+            document.getElementById('loading').classList.remove('active');
+            document.getElementById('loading').innerHTML = `
+                <div style="background: var(--bg-card); padding: 35px; border-radius: 12px; border: 1px solid var(--critical); max-width: 550px; margin: 0 auto;">
+                    <div style="font-size: 2.5rem; margin-bottom: 15px;">\u26a0\ufe0f</div>
+                    <h3 style="color: var(--critical); margin-bottom: 15px;">Assessment could not be completed</h3>
+                    <p style="color: var(--text-muted); margin-bottom: 20px;">${message}</p>
+                    <button onclick="location.reload()" style="padding: 12px 30px; background: var(--gold); color: #000; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Try Again</button>
+                </div>
+            `;
+            document.getElementById('loading').classList.add('active');
+        }
+
         async function pollForResults(scanId, domain) {
+            // Without a scan_id there is nothing to poll — the previous build
+            // called this with `undefined` and silently span until it gave up.
+            if (!scanId) {
+                showScanError('The assessment could not be tracked. Please try again.');
+                return;
+            }
             let attempts = 0;
             const poll = async () => {
                 attempts++;
                 try {
-                    let snapshot = await db.collection('scans').where('scan_id', '==', scanId).limit(1).get();
-                    if (snapshot.empty) { snapshot = await db.collection('scans').where('domain', '==', domain).orderBy('timestamp', 'desc').limit(1).get(); }
-                    if (!snapshot.empty && snapshot.docs[0].data().findings) {
-                        document.getElementById('loading').classList.remove('active');
-                        document.getElementById('results').classList.remove('hidden');
-                        displayResults(snapshot.docs[0].data());
-                        return;
+                    const snapshot = await db.collection('scans').where('scan_id', '==', scanId).limit(1).get();
+                    if (!snapshot.empty) {
+                        const data = snapshot.docs[0].data();
+                        // Terminal failure: the workflow always writes one now, so
+                        // this branch is reachable instead of hanging.
+                        if (data.status === 'failed') {
+                            showScanError(data.error?.message || 'The assessment did not finish.');
+                            return;
+                        }
+                        if (data.findings) {
+                            document.getElementById('loading').classList.remove('active');
+                            document.getElementById('results').classList.remove('hidden');
+                            displayResults(data);
+                            return;
+                        }
                     }
                 } catch (e) { console.log('Poll:', e); }
-                if (attempts < 20) { setTimeout(poll, 3000); }
+                if (attempts < 20) {
+                    setTimeout(poll, 3000);
+                } else {
+                    // Say so, rather than leaving a spinner up forever.
+                    showScanError('The assessment is taking longer than expected. It may still finish — reload this page shortly.');
+                }
             };
             poll();
         }

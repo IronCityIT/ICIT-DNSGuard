@@ -1,84 +1,336 @@
 name: DNS Guard - Security Analysis
 
+# ============================================================
+# DNS posture assessment. Dispatched by the trigger Cloud Function (the public
+# dashboard's "Run Free Assessment" button) or manually.
+#
+#   analyze -> AI consensus (shared engine) -> storeScanResults (Firestore)
+#                                           -> dashboard polls scans/{scan_id}
+#
+# The input is named `domain` (not `target`) on purpose: the DEPLOYED
+# triggerDNSScan function dispatches with that key, and renaming it here would
+# break the live free-scan funnel. Both names are accepted by the ICIT standard.
+#
+# White-label: no underlying tool names appear in client-visible output.
+# ============================================================
+
 on:
   workflow_dispatch:
     inputs:
       domain:
         description: 'Domain to analyze'
         required: true
+        type: string
       client_name:
-        description: 'Client name'
+        description: 'Client identifier'
         required: true
         default: 'Demo'
+        type: string
       scan_id:
-        description: 'Unique scan identifier'
+        description: 'Unique scan identifier (supplied by the trigger function)'
         required: false
+        type: string
       enable_subdomains:
         description: 'Enable subdomain enumeration'
         required: false
+        type: choice
         default: 'true'
+        options:
+          - 'true'
+          - 'false'
       enable_threat_intel:
-        description: 'Enable threat intelligence'
+        description: 'Enable threat intelligence enrichment'
         required: false
+        type: choice
         default: 'true'
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dns-analysis-${{ inputs.scan_id || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   analyze:
+    name: DNS Analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       findings_b64: ${{ steps.extract.outputs.findings_b64 }}
       has_findings: ${{ steps.extract.outputs.has_findings }}
-      scan_id: ${{ steps.post.outputs.scan_id }}
+      scan_id: ${{ steps.ids.outputs.scan_id }}
+      client_id: ${{ steps.ids.outputs.client_id }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -r requirements.txt || pip install dnspython requests
 
-      - name: Run DNS Analysis
-        id: scan
+      - name: Install dependencies
         run: |
+          set -euo pipefail
+          # A dependency failure used to be masked by a `||` fallback, which let
+          # the scan run against a half-installed environment.
+          pip install --quiet -r requirements.txt
+
+      # SECURITY GATE. This workflow is reachable, via the trigger function, by
+      # anyone on the internet who can submit the public free-scan form. The
+      # domain therefore has to be proven to be a hostname before it is allowed
+      # anywhere near a command line. Anything else is rejected outright.
+      - name: Validate inputs and resolve identifiers
+        id: ids
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          SCAN_ID_IN: ${{ inputs.scan_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DOMAIN:-}" ]; then echo "::error::domain is required"; exit 1; fi
+          if [ -z "${CLIENT_NAME:-}" ]; then echo "::error::client_name is required"; exit 1; fi
+
+          # Strict hostname allow-list: letters, digits, hyphens, dots only.
+          # No quotes, no semicolons, no $, no backticks, no whitespace.
+          if ! printf '%s' "$DOMAIN" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$'; then
+            echo "::error::domain '$DOMAIN' is not a valid hostname — rejected"
+            exit 1
+          fi
+          if [ ${#DOMAIN} -gt 253 ]; then
+            echo "::error::domain exceeds 253 characters"; exit 1
+          fi
+
+          SCAN_ID="${SCAN_ID_IN:-}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="dnsguard-${RUN_ID}"
+
+          CLIENT_ID=$(printf '%s' "$CLIENT_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+          if [ -z "$CLIENT_ID" ]; then
+            echo "::error::client_name '$CLIENT_NAME' does not yield a usable client_id"; exit 1
+          fi
+
+          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
+          echo "client_id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
+          echo "Validated domain, scan_id=$SCAN_ID, client_id=$CLIENT_ID"
+
+      # No `eval`, and no interpolation of any input into the command line. The
+      # arguments are built as an array and the values arrive via env.
+      - name: Run DNS analysis
+        id: scan
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          ENABLE_SUBDOMAINS: ${{ inputs.enable_subdomains }}
+          ENABLE_THREAT_INTEL: ${{ inputs.enable_threat_intel }}
+          VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
+          ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
+        run: |
+          set -euo pipefail
           mkdir -p reports
-          CMD="python src/cli.py -d '${{ inputs.domain }}' -c '${{ inputs.client_name }}' -o ./reports"
-          [ "${{ inputs.enable_subdomains }}" = "true" ] && CMD="$CMD -s"
-          [ "${{ inputs.enable_threat_intel }}" = "true" ] && CMD="$CMD -t -g"
-          echo "Running: $CMD"
-          eval $CMD
-          REPORT=$(ls -t reports/*.json | head -1)
-          echo "report_file=$REPORT" >> $GITHUB_OUTPUT
+          ARGS=(-d "$DOMAIN" -c "$CLIENT_NAME" -o ./reports)
+          [ "$ENABLE_SUBDOMAINS" = "true" ] && ARGS+=(-s)
+          [ "$ENABLE_THREAT_INTEL" = "true" ] && ARGS+=(-t -g)
+
+          # stderr is kept as an artifact so a failed run is diagnosable without
+          # re-running it.
+          set +e
+          python src/cli.py "${ARGS[@]}" 2> reports/scan-stderr.log
+          RC=$?
+          set -e
+          if [ $RC -ne 0 ]; then
+            echo "::error::DNS analysis exited with code $RC"
+            echo "--- captured stderr ---"
+            cat reports/scan-stderr.log || true
+            exit $RC
+          fi
+
+          REPORT=$(find reports -maxdepth 1 -name '*.json' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+          if [ -z "$REPORT" ]; then
+            echo "::error::analysis produced no report file"
+            cat reports/scan-stderr.log || true
+            exit 1
+          fi
+          # Validation gate: the report is the only contract downstream.
+          [ "$(head -c 1 "$REPORT")" = "{" ] || {
+            echo "::error::report does not start with {"; exit 1; }
+          python3 -m json.tool "$REPORT" > /dev/null
+          echo "report_file=$REPORT" >> "$GITHUB_OUTPUT"
+          echo "Report validated: $REPORT"
 
       - name: Extract findings
         id: extract
-        run: |
-          REPORT="${{ steps.scan.outputs.report_file }}"
-          FINDINGS=$(cat "$REPORT" | jq -c '.findings // []')
-          FINDINGS_B64=$(echo "$FINDINGS" | base64 -w0)
-          echo "findings_b64=$FINDINGS_B64" >> $GITHUB_OUTPUT
-          [ "$FINDINGS" != "[]" ] && echo "has_findings=true" >> $GITHUB_OUTPUT || echo "has_findings=false" >> $GITHUB_OUTPUT
-
-      - name: Post to QNAP API
-        id: post
         env:
-          API_URL: https://api.ironcityit.com/ingest
-          API_KEY: ${{ secrets.IRONCITY_API_KEY }}
+          REPORT: ${{ steps.scan.outputs.report_file }}
         run: |
-          REPORT="${{ steps.scan.outputs.report_file }}"
-          jq '. + {product_id: "dnsguard", target: .domain}' "$REPORT" > /tmp/report.json
-          RESPONSE=$(curl -s -X POST "$API_URL" \
-            -H "Content-Type: application/json" \
-            -H "X-API-Key: $API_KEY" \
-            -d @/tmp/report.json)
-          echo "$RESPONSE"
-          SCAN_ID=$(echo "$RESPONSE" | jq -r '.scan_id')
-          echo "scan_id=$SCAN_ID" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          FINDINGS=$(jq -c '.findings // []' "$REPORT")
+          echo "findings_b64=$(printf '%s' "$FINDINGS" | base64 -w0)" >> "$GITHUB_OUTPUT"
+          if [ "$FINDINGS" = "[]" ]; then
+            echo "has_findings=false" >> "$GITHUB_OUTPUT"
+            echo "No findings produced"
+          else
+            echo "has_findings=true" >> "$GITHUB_OUTPUT"
+            echo "Findings: $(printf '%s' "$FINDINGS" | jq 'length')"
+          fi
 
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnsguard-report-${{ steps.ids.outputs.scan_id }}
+          path: reports/
+          retention-days: 90
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnsguard-diagnostics-${{ github.run_id }}
+          path: reports/scan-stderr.log
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # AI analysis is delegated to the shared engine and never re-implemented here.
   ai-consensus:
+    name: AI Consensus Analysis
     needs: analyze
     if: needs.analyze.outputs.has_findings == 'true'
     uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
     with:
       findings_json: ${{ needs.analyze.outputs.findings_b64 }}
       scan_id: ${{ needs.analyze.outputs.scan_id }}
+      client_id: ${{ needs.analyze.outputs.client_id }}
       product: dnsguard
     secrets: inherit
+
+  # Firestore is the store of record. Previously the workflow POSTed the report
+  # to the QNAP Flask API and NEVER wrote to Firestore, so the document the
+  # dashboard polls was never updated and the free scan spun forever.
+  store:
+    name: Store Results
+    needs: [analyze, ai-consensus]
+    if: always() && needs.analyze.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download report
+        uses: actions/download-artifact@v4
+        with:
+          name: dnsguard-report-${{ needs.analyze.outputs.scan_id }}
+          path: incoming
+
+      - name: Build storeScanResults payload
+        env:
+          SCAN_ID: ${{ needs.analyze.outputs.scan_id }}
+          CLIENT_ID: ${{ needs.analyze.outputs.client_id }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          DOMAIN: ${{ inputs.domain }}
+          CONSENSUS_STATUS: ${{ needs.ai-consensus.result }}
+        run: |
+          set -euo pipefail
+          REPORT=$(find incoming -maxdepth 2 -name '*.json' ! -name '*stderr*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+          if [ -z "$REPORT" ]; then echo "::error::no report in artifact"; exit 1; fi
+          # The dashboard renders straight off this document, so the report's own
+          # shape is preserved and the routing fields are added alongside it.
+          jq --arg sid "$SCAN_ID" \
+             --arg cid "$CLIENT_ID" \
+             --arg cname "$CLIENT_NAME" \
+             --arg dom "$DOMAIN" \
+             --arg cons "$CONSENSUS_STATUS" \
+             --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             'del(.tools_used) + {product_id: "dnsguard", scan_id: $sid, client_id: $cid,
+                   client_name: $cname, target: $dom, status: "completed",
+                   consensus: {status: $cons}, timestamp: $ts}' \
+             "$REPORT" > payload.json
+          [ "$(head -c 1 payload.json)" = "{" ] || {
+            echo "::error::payload.json does not start with {"; exit 1; }
+          python3 -m json.tool payload.json > /dev/null
+          echo "payload.json is valid JSON"
+
+      - name: POST to storeScanResults
+        env:
+          # Override-able by secret; the default is this product's own deployed
+          # storeScanResults endpoint, already referenced in cloud-function/index.js.
+          STORE_URL_SECRET: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+          STORE_URL_DEFAULT: https://storescanresults-43248247502.us-east5.run.app
+        run: |
+          set -euo pipefail
+          STORE_URL="${STORE_URL_SECRET:-$STORE_URL_DEFAULT}"
+          HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
+            -H "Content-Type: application/json" \
+            --data @payload.json)
+          echo "storeScanResults responded HTTP $HTTP_CODE"
+          cat response.txt || true
+          case "$HTTP_CODE" in
+            2*) echo "Results stored" ;;
+            *)  echo "::error::store POST rejected (HTTP $HTTP_CODE)"; exit 1 ;;
+          esac
+
+  # Without this the dashboard polls a document that never reaches a terminal
+  # state and the free scan spins until the browser gives up.
+  report-failure:
+    name: Report Failure
+    needs: [analyze, ai-consensus, store]
+    if: ${{ always() && contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Build failure payload
+        env:
+          SCAN_ID_IN: ${{ needs.analyze.outputs.scan_id }}
+          RUN_ID: ${{ github.run_id }}
+          CLIENT_ID_IN: ${{ needs.analyze.outputs.client_id }}
+          CLIENT_NAME: ${{ inputs.client_name }}
+          DOMAIN: ${{ inputs.domain }}
+          ANALYZE_RESULT: ${{ needs.analyze.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The analyze job may have died before emitting its ids; rebuild them
+          # with the same rules so the failure lands on the document the
+          # dashboard is already polling.
+          SCAN_ID="${SCAN_ID_IN:-}"
+          [ -z "$SCAN_ID" ] && SCAN_ID="dnsguard-${RUN_ID}"
+          CLIENT_ID="${CLIENT_ID_IN:-}"
+          if [ -z "$CLIENT_ID" ]; then
+            CLIENT_ID=$(printf '%s' "$CLIENT_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+          fi
+          [ -z "$CLIENT_ID" ] && CLIENT_ID="unknown"
+
+          if [ "$ANALYZE_RESULT" = "failure" ]; then
+            STAGE="scan"
+            MESSAGE="Assessment did not complete. No results were produced for this domain."
+          else
+            STAGE="analyze-store"
+            MESSAGE="Assessment completed but results could not be analyzed or stored."
+          fi
+
+          jq -n --arg sid "$SCAN_ID" --arg cid "$CLIENT_ID" --arg cname "$CLIENT_NAME" \
+                --arg dom "$DOMAIN" --arg stage "$STAGE" --arg msg "$MESSAGE" \
+                --arg url "$RUN_URL" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+             '{product_id: "dnsguard", scan_id: $sid, client_id: $cid,
+               client_name: $cname, domain: $dom, target: $dom,
+               status: "failed", findings: [],
+               error: {stage: $stage, message: $msg, run_url: $url},
+               timestamp: $ts}' > payload.json
+          python3 -m json.tool payload.json > /dev/null
+          echo "Failure payload built for scan_id=$SCAN_ID stage=$STAGE"
+
+      - name: POST failure record to storeScanResults
+        env:
+          STORE_URL_SECRET: ${{ secrets.STORE_SCAN_RESULTS_URL }}
+          STORE_URL_DEFAULT: https://storescanresults-43248247502.us-east5.run.app
+        run: |
+          set -euo pipefail
+          STORE_URL="${STORE_URL_SECRET:-$STORE_URL_DEFAULT}"
+          HTTP_CODE=$(curl -sS -o response.txt -w '%{http_code}' -X POST "$STORE_URL" \
+            -H "Content-Type: application/json" \
+            --data @payload.json)
+          echo "storeScanResults responded HTTP $HTTP_CODE"
+          cat response.txt || true
+          case "$HTTP_CODE" in
+            2*) echo "Failure record stored — dashboard will show the scan as failed" ;;
+            *)  echo "::error::failed to store the failure record (HTTP $HTTP_CODE)"; exit 1 ;;
+          esac
