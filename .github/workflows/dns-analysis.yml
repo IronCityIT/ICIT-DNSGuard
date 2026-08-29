@@ -254,7 +254,7 @@ jobs:
           # Override-able by secret; the default is this product's own deployed
           # storeScanResults endpoint, already referenced in cloud-function/index.js.
           STORE_URL_SECRET: ${{ secrets.STORE_SCAN_RESULTS_URL }}
-          STORE_URL_DEFAULT: https://storescanresults-43248247502.us-east5.run.app
+          STORE_URL_DEFAULT: https://us-east5-icit-dnsguard.cloudfunctions.net/storeScanResults
         run: |
           set -euo pipefail
           STORE_URL="${STORE_URL_SECRET:-$STORE_URL_DEFAULT}"
@@ -321,7 +321,7 @@ jobs:
       - name: POST failure record to storeScanResults
         env:
           STORE_URL_SECRET: ${{ secrets.STORE_SCAN_RESULTS_URL }}
-          STORE_URL_DEFAULT: https://storescanresults-43248247502.us-east5.run.app
+          STORE_URL_DEFAULT: https://us-east5-icit-dnsguard.cloudfunctions.net/storeScanResults
         run: |
           set -euo pipefail
           STORE_URL="${STORE_URL_SECRET:-$STORE_URL_DEFAULT}"
