@@ -212,3 +212,65 @@ touched. There are also `index.html.backup` and `index.html.old` in `dashboard/p
 
 Unlike Threat Inspector, all three legs exist here. They were simply not connected to
 each other. `docs/UI-WIRING.md` documents the corrected flow.
+
+---
+
+## Note F — CRITICAL: live Firestore is world-readable and world-deletable
+
+Found 2026-09-01 by the orchestrator while verifying another worker's Firestore proof.
+Not a code defect in this repo; recorded here because this repo is one of the affected
+products and the fix has a prerequisite that this repo owns.
+
+### What was verified
+
+Against `icit-dnsguard` (and, identically, `iron-city-it-threatinspector` and
+`ironcity-attacksimpro`), with **no credential of any kind**:
+
+- `GET  https://firestore.googleapis.com/v1/projects/icit-dnsguard/databases/(default)/documents/scans`
+  → **HTTP 200**, returns scan documents.
+- `DELETE .../documents/scans/<any-nonexistent-id>` → **HTTP 200**, i.e. the rules did
+  not deny the write. (Probed against a document that does not exist, so nothing was
+  destroyed. A rules-denied write returns 403.)
+
+So any anonymous caller on the internet can read every stored scan and delete or forge
+scan records. Across the three projects this exposed 82 documents and, on Threat
+Inspector, 5 distinct `client_id` values (`audit-demo`, `fixture-selftest`, `internal`,
+`ironcity`, `test`) — i.e. multiple tenants readable by anyone.
+
+### Root cause
+
+`deploy-functions.yml` has **never succeeded once** on any product (0 successes across
+16 deploy runs fleet-wide) because `FIREBASE_SERVICE_ACCOUNT` does not exist. The
+projects therefore still carry the open test-mode rules assigned at project creation.
+The missing credential is not only blocking new deploys — it is why production has been
+open this entire time.
+
+### Why this repo cannot simply ship a firestore.rules
+
+Two blockers specific to DNS Guard:
+
+1. `firebase.json` declares **only `hosting`** — no `firestore` section — so a rules
+   file would not be deployed even once a credential exists.
+2. `dashboard/public/index.html` reads Firestore **directly from the browser with no
+   authentication** (`db.collection('scans').where(...)`; there is no `firebase.auth()`
+   anywhere in it). The permissive rules are therefore load-bearing for the current
+   dashboard: applying tenant-filtered rules today would return zero rows and break it.
+
+Writing a rules file now would either break production or be security theatre, so none
+was added. This is deliberate, not an oversight.
+
+### Remediation order (must be done in this sequence)
+
+1. Mint `FIREBASE_SERVICE_ACCOUNT` and set it per-repo.
+2. Give this dashboard an Auth0 -> Firebase custom-token login that mints a `client_id`
+   claim (tenant partitioning cannot exist before this).
+3. Move the writer off the flat `scans/{scanId}` collection onto
+   `clients/{client_id}/scans/{scanId}`, matching Threat Inspector.
+4. Add `firestore.rules` + a `firestore` block in `firebase.json`, then deploy.
+5. Re-run the two probes above and confirm 403 on both.
+
+Until step 5 passes, treat all stored scan data as public.
+
+Related: `cloud-function/index.js:221` exposes a public, unauthenticated `GET` by
+`scan_id` with `CORS *`. It already strips `email`, but it remains an unauthenticated
+read path over the same data and should be revisited in step 2.
