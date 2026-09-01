@@ -15,6 +15,12 @@ name: DNS Guard - Security Analysis
 # ============================================================
 
 on:
+  # Weekly posture baseline for the flagship domain. A scheduled run carries no
+  # workflow inputs, so the resolve step below falls back to the defaults it
+  # declares — without those fallbacks the validation gate would reject every
+  # scheduled run for an empty domain.
+  schedule:
+    - cron: '17 7 * * 1'
   workflow_dispatch:
     inputs:
       domain:
@@ -64,6 +70,8 @@ jobs:
       has_findings: ${{ steps.extract.outputs.has_findings }}
       scan_id: ${{ steps.ids.outputs.scan_id }}
       client_id: ${{ steps.ids.outputs.client_id }}
+      domain: ${{ steps.ids.outputs.domain }}
+      client_name: ${{ steps.ids.outputs.client_name }}
     steps:
       - uses: actions/checkout@v4
 
@@ -85,8 +93,11 @@ jobs:
       - name: Validate inputs and resolve identifiers
         id: ids
         env:
-          DOMAIN: ${{ inputs.domain }}
-          CLIENT_NAME: ${{ inputs.client_name }}
+          # The `|| ...` fallbacks are what make the schedule trigger viable:
+          # on a scheduled run the inputs context is empty. Dispatched runs are
+          # unaffected — an explicit input always wins.
+          DOMAIN: ${{ inputs.domain || 'ironcityit.com' }}
+          CLIENT_NAME: ${{ inputs.client_name || 'ironcity' }}
           SCAN_ID_IN: ${{ inputs.scan_id }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -114,6 +125,10 @@ jobs:
 
           echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
           echo "client_id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
+          # Resolved (not raw) values, so every later job sees what was actually
+          # scanned rather than an input that may have been empty.
+          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "client_name=$CLIENT_NAME" >> "$GITHUB_OUTPUT"
           echo "Validated domain, scan_id=$SCAN_ID, client_id=$CLIENT_ID"
 
       # No `eval`, and no interpolation of any input into the command line. The
@@ -121,10 +136,12 @@ jobs:
       - name: Run DNS analysis
         id: scan
         env:
-          DOMAIN: ${{ inputs.domain }}
-          CLIENT_NAME: ${{ inputs.client_name }}
-          ENABLE_SUBDOMAINS: ${{ inputs.enable_subdomains }}
-          ENABLE_THREAT_INTEL: ${{ inputs.enable_threat_intel }}
+          DOMAIN: ${{ steps.ids.outputs.domain }}
+          CLIENT_NAME: ${{ steps.ids.outputs.client_name }}
+          # Default to on so a scheduled run (empty inputs context) performs the
+          # same full assessment a default dispatch does.
+          ENABLE_SUBDOMAINS: ${{ inputs.enable_subdomains || 'true' }}
+          ENABLE_THREAT_INTEL: ${{ inputs.enable_threat_intel || 'true' }}
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
           ABUSEIPDB_API_KEY: ${{ secrets.ABUSEIPDB_API_KEY }}
         run: |
@@ -225,8 +242,8 @@ jobs:
         env:
           SCAN_ID: ${{ needs.analyze.outputs.scan_id }}
           CLIENT_ID: ${{ needs.analyze.outputs.client_id }}
-          CLIENT_NAME: ${{ inputs.client_name }}
-          DOMAIN: ${{ inputs.domain }}
+          CLIENT_NAME: ${{ needs.analyze.outputs.client_name }}
+          DOMAIN: ${{ needs.analyze.outputs.domain }}
           CONSENSUS_STATUS: ${{ needs.ai-consensus.result }}
         run: |
           set -euo pipefail
@@ -282,8 +299,8 @@ jobs:
           SCAN_ID_IN: ${{ needs.analyze.outputs.scan_id }}
           RUN_ID: ${{ github.run_id }}
           CLIENT_ID_IN: ${{ needs.analyze.outputs.client_id }}
-          CLIENT_NAME: ${{ inputs.client_name }}
-          DOMAIN: ${{ inputs.domain }}
+          CLIENT_NAME: ${{ needs.analyze.outputs.client_name || inputs.client_name }}
+          DOMAIN: ${{ needs.analyze.outputs.domain || inputs.domain }}
           ANALYZE_RESULT: ${{ needs.analyze.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
