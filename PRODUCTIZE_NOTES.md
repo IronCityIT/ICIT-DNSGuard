@@ -151,9 +151,31 @@ calls for. I added a `client_id` field so records carry it, but **did not re-sha
 collection** — that would break the live dashboard's queries and the deployed function,
 and is a migration, not an enhancement.
 
-**E. `firebase-deploy.yml` deploys on every push to `main`.** Merging any PR
-auto-deploys hosting to the live `icit-dnsguard` site. Left as-is, but worth knowing
-before merging.
+**E. `firebase-deploy.yml` does NOT actually deploy — it fails on every push to
+`main`.** This note previously read "deploys on every push to `main` ... worth knowing
+before merging". That is not what happens. The job dies before it reaches Firebase:
+
+```
+Error: Input required and not supplied: firebaseServiceAccount
+```
+
+`FIREBASE_SERVICE_ACCOUNT` is not present in this repository's secrets
+(`gh secret list` returns `DNSGUARD_CLOUD_FUNCTION_URL`, `GEMINI_API_KEY`,
+`GROQ_API_KEY`, `IRONCITY_API_KEY`, `OPENROUTER_API_KEY`, `STORE_SCAN_RESULTS_URL`
+— and nothing else), nor at org level. Confirmed on runs `33226159052` (2026-08-29)
+and `33554828363` (2026-09-01).
+
+Consequences, and they cut both ways:
+
+- The live `icit-dnsguard.web.app` site is **not** updated by merges. Any dashboard
+  change in this repo is committed but not published. The site currently serves
+  whatever was last deployed by hand.
+- Conversely, merging a PR here carries **no** risk of an unreviewed hosting deploy.
+- The red X on `main` after every merge is this, not a regression.
+
+**This is an external blocker and was not worked around.** Provisioning the secret is
+an account-level action. The same missing credential blocks the `storeScanResults`
+redeploy in `ICIT-AttackSimPro`, so it is a fleet-wide gap rather than a DNS Guard one.
 
 **F. Consensus secrets are missing** (`GROQ_API_KEY`, `OPENROUTER_API_KEY`,
 `GEMINI_API_KEY`, `IRONCITY_API_KEY`). Same blocker as Threat Inspector — the
