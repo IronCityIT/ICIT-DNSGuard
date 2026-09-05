@@ -277,3 +277,130 @@ def test_certificate_transparency_can_be_switched_off(monkeypatch):
         one("example.com"), {"use_certificate_transparency": False}
     )
     assert called == []
+
+
+# ── Reputation ───────────────────────────────────────────────────────────────
+
+
+class FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+class FakeSession:
+    """Returns a canned response per URL fragment, or raises for one."""
+
+    def __init__(self, routes):
+        self.routes = routes
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        for fragment, response in self.routes.items():
+            if fragment in url:
+                if isinstance(response, Exception):
+                    raise response
+                return response
+        raise AssertionError(f"unexpected request to {url}")
+
+
+def vt_stats(malicious):
+    return {
+        "data": {"attributes": {"last_analysis_stats": {"malicious": malicious, "harmless": 60}}}
+    }
+
+
+def test_reputation_without_a_provider_says_unchecked_not_clean(monkeypatch):
+    from modules import reputation_lookup
+
+    findings = reputation_lookup.ReputationLookup().run(one("example.com"), {"reputation_keys": {}})
+    assert len(findings) == 1
+    assert "not consulted" in findings[0].title
+    assert findings[0].evidence["consulted"] is False
+
+
+def test_reputation_flags_a_bad_address(monkeypatch):
+    from modules import reputation_lookup
+
+    monkeypatch.setattr(reputation_lookup, "make_resolver", lambda *a, **k: object())
+    monkeypatch.setattr(reputation_lookup, "query", lambda *a, **k: ["192.0.2.66"])
+    session = FakeSession(
+        {
+            "/domains/": FakeResponse(vt_stats(0)),
+            "/ip_addresses/": FakeResponse(vt_stats(12)),
+            "abuseipdb": FakeResponse({"data": {"abuseConfidenceScore": 95, "totalReports": 40}}),
+        }
+    )
+    findings = reputation_lookup.ReputationLookup().run(
+        one("example.com"),
+        {"http": session, "reputation_keys": {"virustotal": "k1", "abuseipdb": "k2"}},
+    )
+    flagged = [f for f in findings if "negative reputation" in f.title]
+    assert len(flagged) == 1
+    assert flagged[0].severity == "high"
+    providers = {v["provider"] for v in flagged[0].evidence["verdicts"]}
+    assert providers == {"virustotal", "abuseipdb"}
+
+
+def test_a_clean_lookup_raises_nothing(monkeypatch):
+    from modules import reputation_lookup
+
+    monkeypatch.setattr(reputation_lookup, "make_resolver", lambda *a, **k: object())
+    monkeypatch.setattr(reputation_lookup, "query", lambda *a, **k: ["192.0.2.1"])
+    session = FakeSession(
+        {
+            "/domains/": FakeResponse(vt_stats(0)),
+            "/ip_addresses/": FakeResponse(vt_stats(0)),
+        }
+    )
+    findings = reputation_lookup.ReputationLookup().run(
+        one("example.com"), {"http": session, "reputation_keys": {"virustotal": "k1"}}
+    )
+    assert severities(findings) == ["info"]
+    assert all("negative" not in f.title for f in findings)
+
+
+def test_a_provider_outage_is_reported_as_partial_not_clean(monkeypatch):
+    """Absence of a verdict must never read as a clean verdict."""
+    from modules import reputation_lookup
+
+    monkeypatch.setattr(reputation_lookup, "make_resolver", lambda *a, **k: object())
+    monkeypatch.setattr(reputation_lookup, "query", lambda *a, **k: ["192.0.2.1"])
+    session = FakeSession(
+        {
+            "/domains/": FakeResponse({}, status_code=429),
+            "/ip_addresses/": ConnectionError("provider unreachable"),
+        }
+    )
+    findings = reputation_lookup.ReputationLookup().run(
+        one("example.com"), {"http": session, "reputation_keys": {"virustotal": "k1"}}
+    )
+    partial = [f for f in findings if "could not be consulted" in f.title]
+    assert len(partial) == 1
+    assert partial[0].evidence["unavailable"] == ["virustotal"]
+    assert partial[0].evidence["consulted"] == 0
+
+
+def test_no_api_key_ever_reaches_a_finding(monkeypatch):
+    import json
+
+    from modules import reputation_lookup
+
+    monkeypatch.setattr(reputation_lookup, "make_resolver", lambda *a, **k: object())
+    monkeypatch.setattr(reputation_lookup, "query", lambda *a, **k: ["192.0.2.1"])
+    session = FakeSession(
+        {
+            "/domains/": FakeResponse(vt_stats(0)),
+            "/ip_addresses/": FakeResponse(vt_stats(0)),
+        }
+    )
+    findings = reputation_lookup.ReputationLookup().run(
+        one("example.com"),
+        {"http": session, "reputation_keys": {"virustotal": "super-secret-key"}},
+    )
+    serialised = json.dumps([f.to_dict() for f in findings])
+    assert "super-secret-key" not in serialised

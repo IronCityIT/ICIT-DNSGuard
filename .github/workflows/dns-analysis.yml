@@ -52,6 +52,21 @@ on:
         options:
           - 'true'
           - 'false'
+      modules:
+        description: 'Comma list of specific modules to run (overrides the group)'
+        required: false
+        type: string
+      group:
+        description: 'Named module group'
+        required: false
+        type: choice
+        default: 'standard'
+        options:
+          - 'quick'
+          - 'standard'
+          - 'deep'
+          - 'email'
+          - 'surface'
 
 permissions:
   contents: read
@@ -133,13 +148,23 @@ jobs:
 
       # No `eval`, and no interpolation of any input into the command line. The
       # arguments are built as an array and the values arrive via env.
+      # Modules are selected here, not hardcoded. --modules wins over --group,
+      # and the values reach the process through env and an argv array — never
+      # interpolated into a shell string. See the security gate above for why.
       - name: Run DNS analysis
         id: scan
         env:
           DOMAIN: ${{ steps.ids.outputs.domain }}
           CLIENT_NAME: ${{ steps.ids.outputs.client_name }}
-          # Default to on so a scheduled run (empty inputs context) performs the
-          # same full assessment a default dispatch does.
+          CLIENT_ID: ${{ steps.ids.outputs.client_id }}
+          SCAN_ID: ${{ steps.ids.outputs.scan_id }}
+          # Default to the full standard assessment so a scheduled run (empty
+          # inputs context) does what a default dispatch does.
+          MODULES: ${{ inputs.modules }}
+          GROUP: ${{ inputs.group || 'standard' }}
+          # The legacy toggles still work: the deployed trigger function sends
+          # them, and dropping them would break the live free-scan funnel. They
+          # widen the group rather than selecting individual modules.
           ENABLE_SUBDOMAINS: ${{ inputs.enable_subdomains || 'true' }}
           ENABLE_THREAT_INTEL: ${{ inputs.enable_threat_intel || 'true' }}
           VIRUSTOTAL_API_KEY: ${{ secrets.VIRUSTOTAL_API_KEY }}
@@ -147,14 +172,24 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p reports
-          ARGS=(-d "$DOMAIN" -c "$CLIENT_NAME" -o ./reports)
-          [ "$ENABLE_SUBDOMAINS" = "true" ] && ARGS+=(-s)
-          [ "$ENABLE_THREAT_INTEL" = "true" ] && ARGS+=(-t -g)
+
+          SELECTED_GROUP="$GROUP"
+          if [ "$ENABLE_SUBDOMAINS" != "true" ] && [ "$SELECTED_GROUP" = "standard" ]; then
+            SELECTED_GROUP="email"
+          fi
+
+          ARGS=(-d "$DOMAIN" -c "$CLIENT_NAME" --client-id "$CLIENT_ID" \
+                --scan-id "$SCAN_ID" -o ./reports)
+          if [ -n "${MODULES:-}" ]; then
+            ARGS+=(--modules "$MODULES")
+          else
+            ARGS+=(--group "$SELECTED_GROUP")
+          fi
 
           # stderr is kept as an artifact so a failed run is diagnosable without
           # re-running it.
           set +e
-          python src/cli.py "${ARGS[@]}" 2> reports/scan-stderr.log
+          python3 tools/scan.py "${ARGS[@]}" 2> reports/scan-stderr.log
           RC=$?
           set -e
           if [ $RC -ne 0 ]; then
