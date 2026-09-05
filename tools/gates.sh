@@ -89,6 +89,11 @@ gate_json() {
 
 gate_yaml() {
     say "workflow yaml"
+    # Distinguish "the parser is missing" from "the file is broken". Reporting
+    # the second when it is the first sends whoever reads the log to the wrong
+    # file, which is worse than no message at all.
+    python3 -c "import yaml" 2>/dev/null \
+        || fail "PyYAML is not installed; run: pip install -r requirements-dev.txt"
     for file in .github/workflows/*.yml; do
         python3 -c "import sys,yaml; yaml.safe_load(open(sys.argv[1]))" "$file" \
             || fail "$file is not valid YAML"
