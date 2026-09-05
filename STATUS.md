@@ -17,7 +17,7 @@ Deeper design rationale lives in the commit messages; open items and blockers in
 
 | Area | What was verified | Result |
 |---|---|---|
-| **Gates** | All ten `tools/gates.sh` gates: ruff lint, ruff format, mypy, pytest, JSON contract, workflow YAML, `node --check` on the cloud function, `node --check` on both dashboard pages, secret hygiene, build | ✅ green |
+| **Gates** | All eleven `tools/gates.sh` gates: ruff lint, ruff format, mypy, pytest, JSON contract, workflow YAML (actionlint + shellcheck), `node --check` on the cloud function, `node --check` on both dashboard pages, secret hygiene, shellcheck on the gate script itself, build | ✅ green |
 | **Tests** | 378 tests, 88% line coverage over `dnsguard/` + `module_framework/`. No test touches the network — DNS lookups, HTTP fetches and the clock are all injected | ✅ 378/378 |
 | **Typecheck** | `mypy dnsguard module_framework tools` — 36 source files | ✅ clean |
 | **Real scan** | `tools/scan.py --domain ironcityit.com --group standard` against the live domain: grade A+, risk 12/100, 7 findings, 25 records, 20 hosts, RC=0 | ✅ |
@@ -67,7 +67,7 @@ content on our domain. **This is production, not a fixture — worth checking to
 | **`ai-consensus` job** | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `IRONCITY_API_KEY` are not present. All four are on the approved list; they are simply not provisioned | Provision the four secrets |
 | **Live `workflow_dispatch` dry-run** | Would write to the live production Firestore, and `ai-consensus` cannot pass without the secrets above | Run once the secrets land; the store step can then be validated in one pass |
 | **Docker image build** | No Docker in this sandbox | `docker build .` on a Docker host. The gate SKIPs loudly rather than passing |
-| **`actionlint`** | Not installed here. The YAML parses, but Actions semantics are unchecked locally | Already installed and pinned in the new `ci.yml`, so the PR run covers it |
+| ~~`actionlint`~~ | Was skipping locally. Now installed with shellcheck and pinned in both `ci.yml` and this environment | **Resolved** — the yaml gate runs actionlint + shellcheck everywhere |
 
 ---
 
@@ -92,7 +92,7 @@ content on our domain. **This is production, not a fixture — worth checking to
 | `dnsguard/enforcement.py` | Compiles a published policy to RPZ / Unbound / hosts / dnsmasq, stamped with the policy hash |
 | `dnsguard/api.py` | The control-plane API. Refuses to start unauthenticated |
 | `dashboard/public/console.*` | Operator console. Degrades per panel, never builds markup from data, treats 202 as pending approval |
-| `Jenkinsfile` + `tools/gates.sh` + `ci.yml` | One gate definition, three callers |
+| `Jenkinsfile` + `tools/gates.sh` + `ci.yml` | One gate definition, three callers. Eleven gates, including shellcheck on the gate script itself |
 
 ---
 
@@ -100,7 +100,7 @@ content on our domain. **This is production, not a fixture — worth checking to
 
 ```sh
 python3 -m pip install -r requirements-dev.txt
-sh tools/gates.sh all              # every gate, same as Jenkins and CI
+sh tools/gates.sh all              # all eleven gates, same as Jenkins and CI
 python3 tools/scan.py --list-modules
 python3 tools/scan.py --domain ironcityit.com --group standard -o ./reports
 DNSGUARD_API_TOKEN=dev python3 -c "import uvicorn;from dnsguard.api import create_app;uvicorn.run(create_app())"
@@ -112,7 +112,7 @@ DNSGUARD_API_TOKEN=dev python3 -c "import uvicorn;from dnsguard.api import creat
 
 - [x] Branch `productize/dnsguard-policy-platform` pushed
 - [x] Workflow, Cloud Function, Firestore schema and dashboard scaffolding committed
-- [x] Quality gates run locally and reported — all ten green, nothing hidden
+- [x] Quality gates run locally and reported — all eleven green, nothing hidden
 - [x] PR opened against `main` with a clear description
 - [ ] CI gates green on the PR — the authoritative run, and the gate that governs merge
 - [ ] Merge — this repo is IN SCOPE, so merge is authorised once CI is green

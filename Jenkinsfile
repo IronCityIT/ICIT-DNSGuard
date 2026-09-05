@@ -97,6 +97,12 @@ pipeline {
             }
         }
 
+        stage('Gate script') {
+            steps {
+                sh 'sh tools/gates.sh shell'
+            }
+        }
+
         stage('Build') {
             steps {
                 sh '. .venv/bin/activate && sh tools/gates.sh build'

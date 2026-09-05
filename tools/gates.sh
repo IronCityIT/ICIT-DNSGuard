@@ -33,6 +33,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 gate_lint() {
     say "lint (ruff check)"
     have ruff || fail "ruff is not installed; run: pip install -r requirements-dev.txt"
+    # shellcheck disable=SC2086  # SOURCES is a path list; the splitting is the point
     ruff check $SOURCES
     printf 'lint clean\n'
 }
@@ -40,6 +41,7 @@ gate_lint() {
 gate_format() {
     say "format (ruff format --check)"
     have ruff || fail "ruff is not installed"
+    # shellcheck disable=SC2086  # SOURCES is a path list; the splitting is the point
     ruff format --check $SOURCES
     printf 'formatting clean\n'
 }
@@ -159,6 +161,15 @@ gate_dashboard() {
     done
 }
 
+# This script itself is shell that ships and runs on a BusyBox box. Nothing was
+# checking it, which is how the SC2129 that broke the first CI run got written.
+gate_shell() {
+    say "gate script"
+    have shellcheck || { skip "shellcheck not installed"; return 0; }
+    shellcheck -s sh tools/gates.sh || fail "tools/gates.sh has shellcheck findings"
+    printf 'gate script clean\n'
+}
+
 gate_build() {
     say "build"
     # The package must import from a clean interpreter with only the declared
@@ -190,6 +201,7 @@ gate_all() {
     gate_node
     gate_dashboard
     gate_secrets
+    gate_shell
     gate_build
     say "all gates passed"
 }
@@ -204,10 +216,11 @@ case "${1:-all}" in
     node)      gate_node ;;
     dashboard) gate_dashboard ;;
     secrets)   gate_secrets ;;
+    shell)     gate_shell ;;
     build)     gate_build ;;
     all)       gate_all ;;
     *)
-        printf 'usage: %s [lint|format|typecheck|test|json|yaml|node|dashboard|secrets|build|all]\n' "$0"
+        printf 'usage: %s [lint|format|typecheck|test|json|yaml|node|dashboard|secrets|shell|build|all]\n' "$0"
         exit 2
         ;;
 esac

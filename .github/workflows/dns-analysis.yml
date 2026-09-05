@@ -138,12 +138,15 @@ jobs:
             echo "::error::client_name '$CLIENT_NAME' does not yield a usable client_id"; exit 1
           fi
 
-          echo "scan_id=$SCAN_ID" >> "$GITHUB_OUTPUT"
-          echo "client_id=$CLIENT_ID" >> "$GITHUB_OUTPUT"
           # Resolved (not raw) values, so every later job sees what was actually
-          # scanned rather than an input that may have been empty.
-          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
-          echo "client_name=$CLIENT_NAME" >> "$GITHUB_OUTPUT"
+          # scanned rather than an input that may have been empty. Written as one
+          # grouped redirect rather than four appends (shellcheck SC2129).
+          {
+            echo "scan_id=$SCAN_ID"
+            echo "client_id=$CLIENT_ID"
+            echo "domain=$DOMAIN"
+            echo "client_name=$CLIENT_NAME"
+          } >> "$GITHUB_OUTPUT"
           echo "Validated domain, scan_id=$SCAN_ID, client_id=$CLIENT_ID"
 
       # No `eval`, and no interpolation of any input into the command line. The

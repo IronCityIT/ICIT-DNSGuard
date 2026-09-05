@@ -150,7 +150,7 @@ DNSGUARD_API_TOKEN=dev-token DNSGUARD_DATA_DIR=./data \
 ### Quality gates
 ```bash
 pip install -r requirements-dev.txt
-sh tools/gates.sh all      # the same ten gates Jenkins and CI run
+sh tools/gates.sh all      # the same eleven gates Jenkins and CI run
 sh tools/gates.sh lint     # or one at a time
 ```
 

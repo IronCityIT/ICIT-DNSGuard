@@ -45,15 +45,22 @@ jobs:
           python -m pip install --quiet --upgrade pip
           python -m pip install --quiet -r requirements-dev.txt
 
-      - name: Install actionlint
+      - name: Install actionlint and shellcheck
         run: |
           set -euo pipefail
-          # Pinned: an unpinned linter turns an upstream release into a red build
-          # on an unrelated pull request.
-          VERSION=1.7.7
-          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
+          # Both pinned: an unpinned linter turns an upstream release into a red
+          # build on an unrelated pull request. actionlint runs shellcheck over
+          # every `run:` block when it can find it, so the pair has to move
+          # together or the local and CI results diverge.
+          ACTIONLINT=1.7.7
+          SHELLCHECK=0.10.0
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT}/actionlint_${ACTIONLINT}_linux_amd64.tar.gz" \
             | tar -xz -C /usr/local/bin actionlint
+          curl -sSfL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK}/shellcheck-v${SHELLCHECK}.linux.x86_64.tar.xz" \
+            | tar -xJ -C /tmp
+          install "/tmp/shellcheck-v${SHELLCHECK}/shellcheck" /usr/local/bin/shellcheck
           actionlint --version
+          shellcheck --version
 
       # Each gate is its own step so a red run names what broke in the job
       # summary rather than in the middle of a wall of output.
@@ -75,6 +82,8 @@ jobs:
         run: sh tools/gates.sh dashboard
       - name: Secret hygiene
         run: sh tools/gates.sh secrets
+      - name: Gate script
+        run: sh tools/gates.sh shell
       - name: Build
         run: sh tools/gates.sh build
 
