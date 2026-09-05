@@ -324,15 +324,13 @@ def test_a_clean_name_matches_nothing(registry, clock):
 
 
 def test_a_stale_snapshot_marks_its_matches_stale(registry, clock):
+    """Freshness is evaluated at lookup time, not frozen when the index is built
+    — an index held open across a refresh window must not go on claiming a
+    snapshot is current."""
     index = indexed(registry, clock, stale_after_seconds=3600)
     assert index.lookup("evil.example")[0].stale is False
     clock.advance(7200)
-    fresh = IndicatorIndex(
-        [Indicator(**index.lookup("evil.example")[0].indicator.to_dict())],
-        registry=registry,
-        tenant_id="acme",
-    )
-    assert fresh.lookup("evil.example")[0].stale is True
+    assert index.lookup("evil.example")[0].stale is True
 
 
 def test_the_same_name_on_two_feeds_produces_two_citations(registry, clock):

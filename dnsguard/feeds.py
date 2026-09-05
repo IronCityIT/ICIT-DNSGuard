@@ -469,30 +469,46 @@ class IndicatorIndex:
         return set(self._by_name)
 
     def _feed_meta(self, feed_id: str) -> dict[str, Any]:
-        """Publisher/name/freshness for the citation, resolved once per feed."""
-        if feed_id in self._meta:
-            return self._meta[feed_id]
-        meta: dict[str, Any] = {
-            "name": feed_id,
-            "publisher": "unknown",
-            "fetched_at": "",
-            "stale": True,
-        }
-        if self._registry is not None and self._tenant_id:
-            try:
-                feed = self._registry.get(self._tenant_id, feed_id)
-            except NotFoundError:
-                self._meta[feed_id] = meta
-                return meta
-            snapshot = self._registry.latest_snapshot(self._tenant_id, feed_id)
-            meta = {
-                "name": feed.name,
-                "publisher": feed.publisher,
-                "fetched_at": snapshot.fetched_at if snapshot else "",
-                "stale": self._registry.is_stale(feed, snapshot),
+        """Publisher, name and current freshness for the citation.
+
+        The feed definition and its newest snapshot are cached — neither changes
+        while an index is alive. Staleness is NOT cached: it is a function of the
+        clock, and an index held open across a refresh window would otherwise go
+        on asserting a snapshot is fresh long after it stopped being.
+        """
+        if feed_id not in self._meta:
+            static: dict[str, Any] = {
+                "name": feed_id,
+                "publisher": "unknown",
+                "feed": None,
+                "snapshot": None,
             }
-        self._meta[feed_id] = meta
-        return meta
+            if self._registry is not None and self._tenant_id:
+                try:
+                    feed = self._registry.get(self._tenant_id, feed_id)
+                except NotFoundError:
+                    feed = None
+                if feed is not None:
+                    static = {
+                        "name": feed.name,
+                        "publisher": feed.publisher,
+                        "feed": feed,
+                        "snapshot": self._registry.latest_snapshot(self._tenant_id, feed_id),
+                    }
+            self._meta[feed_id] = static
+
+        cached = self._meta[feed_id]
+        feed = cached["feed"]
+        snapshot = cached["snapshot"]
+        stale = True
+        if feed is not None and self._registry is not None:
+            stale = self._registry.is_stale(feed, snapshot)
+        return {
+            "name": cached["name"],
+            "publisher": cached["publisher"],
+            "fetched_at": snapshot.fetched_at if snapshot is not None else "",
+            "stale": stale,
+        }
 
     def lookup(self, name: str, include_parents: bool = True) -> list[Match]:
         query = normalise(name)
