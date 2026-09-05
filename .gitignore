@@ -1,3 +1,11 @@
 __pycache__/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 reports/
+evidence/
+node_modules/
+.venv/
+*.egg-info/
+gate-reports/

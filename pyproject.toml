@@ -1,0 +1,30 @@
+[project]
+name = "icit-dnsguard"
+version = "1.0.0"
+description = "Iron City DNS Guard - DNS security posture, policy lifecycle and protective DNS control plane."
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["dashboard", "cloud-function", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "S", "C4", "RET", "SIM"]
+ignore = ["E501", "S101", "S311", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "N"]
+"module_framework/modules/*" = ["S110"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+ignore_missing_imports = true
+mypy_path = "module_framework"
+exclude = "(^|/)(dashboard|cloud-function)/"
