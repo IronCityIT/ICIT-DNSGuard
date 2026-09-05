@@ -113,14 +113,35 @@ DNSGUARD_API_TOKEN=dev python3 -c "import uvicorn;from dnsguard.api import creat
 - [x] Branch `productize/dnsguard-policy-platform` pushed
 - [x] Workflow, Cloud Function, Firestore schema and dashboard scaffolding committed
 - [x] Quality gates run locally and reported — all eleven green, nothing hidden
-- [x] PR opened against `main` with a clear description
-- [ ] CI gates green on the PR — the authoritative run, and the gate that governs merge
-- [ ] Merge — this repo is IN SCOPE, so merge is authorised once CI is green
-- [ ] Deploy — externally blocked on `FIREBASE_SERVICE_ACCOUNT` (see blockers). Note that
-      merging carries no risk of an unreviewed hosting deploy *because* that deploy is
-      broken; it does change what the public free-scan runs, since `triggerDNSScan`
-      dispatches `dns-analysis.yml` against `main`. That path is covered by the report
-      contract tests and by a real verified scan.
+- [x] PR opened against `main` — [#6](https://github.com/IronCityIT/ICIT-DNSGuard/pull/6)
+- [x] **CI gates green on the PR** — run `33942080820`, all eleven steps green.
+      Two earlier runs failed and both were real: PyYAML was an undeclared gate
+      dependency, and actionlint found an SC2129 that no local run could have caught
+      because shellcheck was installed in neither place. Both fixed at the cause, and
+      the gate script is now shellchecked by a gate of its own.
+- [x] **Merged to `main`** — this repo is IN SCOPE and the gates are green, which is
+      the condition the guardrails set. Merging is low-risk for hosting specifically,
+      because that deploy is broken; it does change what the public free-scan runs,
+      since `triggerDNSScan` dispatches `dns-analysis.yml` against `main`. That path is
+      covered by the report-contract tests and by a verified real scan.
+- [ ] **Deploy — blocked, not skipped.** `FIREBASE_SERVICE_ACCOUNT` does not exist.
+      Until it does, `firestore.rules`, the stored-XSS fix and every other dashboard
+      change on this branch sit in `main` unpublished, and the live site keeps serving
+      the last hand-deployed build. See the blockers table, and notes I–J in
+      `PRODUCTIZE_NOTES.md` for the interim mitigation worth doing by hand.
 
-*This section is updated in place as the run progresses; the state above is as of the
-PR being opened.*
+## What to do next, in order
+
+1. **Check `vpn.ironcityit.com`.** Dangling CNAME to a name that does not resolve, on
+   our own production domain. Minutes to confirm, and it is a domain-takeover primitive
+   if that destination is claimable.
+2. **Set the Firestore rules by hand in the console** if `FIREBASE_SERVICE_ACCOUNT` is
+   going to slip. `firestore.rules` in this repo is the file to paste. That alone removes
+   the write primitive the stored-XSS chain depends on, without waiting for anything.
+3. **Mint `FIREBASE_SERVICE_ACCOUNT`.** It unblocks rules, functions and hosting deploys
+   across the whole fleet, not just this product, and it is why production has been open.
+4. **Provision the four consensus keys** so `ai-consensus` can run and the pipeline can be
+   validated end to end in one pass.
+5. **Auth0 → Firebase custom token** with a `client_id` claim — step 2 of the remediation
+   order, after which the `get` rule becomes a tenant comparison and the last
+   unauthenticated read path closes.
