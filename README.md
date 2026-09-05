@@ -1,10 +1,22 @@
-# 🛡️ Iron City DNS Guard v4.0
+# 🛡️ Iron City DNS Guard
 
-**SMB-Focused Email Security Analysis**
+**Protective DNS: assessment, policy and evidence.**
 
-DNS Guard helps small businesses answer two critical questions:
-1. **"Will my emails land in spam?"** - Email deliverability analysis (SPF, DKIM, DMARC)
-2. **"What's publicly exposed?"** - Subdomain discovery
+DNS Guard answers three questions for a client:
+
+1. **"Will my emails land in spam?"** — sender authorisation, signing and policy
+   (SPF, DKIM, DMARC, MTA-STS, TLS-RPT), graded A+ to F.
+2. **"What's publicly exposed?"** — the hosts published under a domain, and which
+   of them should not be reachable.
+3. **"Why did you block that?"** — every blocking decision cites the feed,
+   snapshot checksum and line it came from, who approved it, and when.
+
+The third question is what makes this a product rather than a scanner. Anything
+that changes what resolves for real users — publishing a policy, rolling one
+back, turning enforcement on at a site, granting an exception, dispatching
+remediation — does not execute until a second person approves exactly that
+change. Every one of those decisions lands on a hash-chained audit log that can
+be exported as an independently verifiable evidence pack.
 
 ## 🎯 Target Audience
 
@@ -35,16 +47,44 @@ Small to medium businesses who:
 ## 🏗️ Architecture
 
 ```
-GitHub Actions Workflow (dns-analysis.yml)
+GitHub Actions (dns-analysis.yml)
+    ↓  selects modules from the registry
+tools/scan.py  →  module_framework/modules/*   (10 selectable checks)
+    ↓  one report, one schema
+AI Consensus Engine (IronCityIT/consensus-engine)  [optional]
     ↓
-Python Analyzer (src/core/analyzer.py)
+Cloud Function storeScanResults  →  Firestore
     ↓
-AI Consensus Engine (IronCityIT/consensus-engine) [Optional]
+Free-scan dashboard (Firebase Hosting)
+
+dnsguard/  — the control plane, served by dnsguard/api.py
+    policy · feeds · tenancy · exceptions · approvals · audit
+    analytics · alerts · compliance · fleetfix · evidence · enforcement
     ↓
-Cloud Function (stores in Firestore)
-    ↓
-Dashboard (Firebase Hosting)
+Operator console (dashboard/public/console.html)
 ```
+
+### The modules
+
+Every check is a `ScanModule`, individually selectable, and the same registry
+drives the CLI, the workflow input and the console's picker — so what the UI
+offers and what CI runs cannot drift apart.
+
+```
+dns_records                zone inventory and structural audit
+spf_audit                  sender authorisation: presence, strictness, lookup budget
+dkim_audit                 published signing keys across the common providers
+dmarc_audit                policy, enforcement level and reporting
+transport_security_audit   MTA-STS and TLS-RPT
+dnssec_audit               signing AND the delegation that makes it count
+subdomain_discovery        public host inventory, dangling aliases, exposed internals
+resolver_performance       latency and loss across the major public resolvers
+reputation_lookup          external reputation, with attribution
+network_path               network path to the domain's servers
+```
+
+Groups: `quick`, `standard`, `deep`, `email`, `surface`, `performance`,
+`reputation`.
 
 ### Session Isolation
 
@@ -94,7 +134,24 @@ Trigger from `portal.ironcityit.com/run` → DNS Guard
 ### Locally
 ```bash
 pip install -r requirements.txt
-python src/core/analyzer.py example.com -s -o report.json
+python3 tools/scan.py --domain example.com --group standard -o ./reports
+python3 tools/scan.py --list-modules
+python3 tools/scan.py --domain example.com --modules spf_audit,dmarc_audit
+python3 tools/scan.py --domain example.com --dry-run   # validate, query nothing
+```
+
+### The control plane
+```bash
+# Refuses to start without a token — it will not come up unauthenticated.
+DNSGUARD_API_TOKEN=dev-token DNSGUARD_DATA_DIR=./data \
+  python3 -c "import uvicorn; from dnsguard.api import create_app; uvicorn.run(create_app())"
+```
+
+### Quality gates
+```bash
+pip install -r requirements-dev.txt
+sh tools/gates.sh all      # the same ten gates Jenkins and CI run
+sh tools/gates.sh lint     # or one at a time
 ```
 
 ## 📁 Project Structure
@@ -102,24 +159,59 @@ python src/core/analyzer.py example.com -s -o report.json
 ```
 ICIT-DNSGuard/
 ├── .github/workflows/
-│   └── dns-analysis.yml      # Main workflow with AI integration
-├── src/
-│   └── core/
-│       └── analyzer.py       # DNS analysis engine
-├── dashboard/
-│   └── public/
-│       └── index.html        # Results dashboard
-├── firebase.json             # Firebase Hosting config
-├── requirements.txt
-└── README.md
+│   ├── ci.yml                # quality gates on every PR
+│   ├── dns-analysis.yml      # the scan pipeline
+│   └── firebase-deploy.yml   # hosting deploy (see STATUS.md — currently blocked)
+├── module_framework/         # the shared scan framework
+│   ├── base.py registry.py targets.py cli.py
+│   └── modules/              # one file per check
+├── dnsguard/                 # the control plane
+│   ├── policy.py feeds.py tenancy.py exceptions_policy.py
+│   ├── approvals.py audit.py evidence.py compliance.py fleetfix.py
+│   ├── analytics.py alerts.py enforcement.py resilience.py
+│   ├── store.py clock.py errors.py report.py
+│   └── api.py                # the HTTP surface
+├── tools/
+│   ├── scan.py               # scan entry point
+│   └── gates.sh              # every quality gate, one script
+├── dashboard/public/
+│   ├── index.html            # public free-scan page
+│   └── console.{html,css,js} # operator console
+├── cloud-function/           # triggerDNSScan, storeScanResults, getScanStatus
+├── tests/                    # 378 tests, none touching the network
+├── firestore.rules           # multi-tenant rules (see STATUS.md for what is live)
+├── Jenkinsfile               # calls tools/gates.sh
+└── STATUS.md                 # what is proven, what is blocked, what is open
 ```
 
-## 🔒 Privacy & Data
+## 🔒 Privacy, tenancy and data
 
-- Scan results stored in Firestore with unique scan IDs
-- No account required for free scans
-- Session isolation prevents users from seeing others' data
-- Results accessible only via direct link
+- Every stored record carries a `client_id`, and the control-plane store has no
+  call that returns a document without one — cross-tenant reads are a shape the
+  API does not have, not a filter someone has to remember.
+- The API refuses to start unauthenticated and defaults CORS to an empty origin
+  list. Every route checks the caller's tenant against the path tenant before any
+  handler runs.
+- Free-scan results are addressed by an unguessable scan id. `firestore.rules`
+  denies all client writes and denies collection listing, so scans cannot be
+  enumerated, forged or deleted.
+- **Current live state is not yet the state above.** See `STATUS.md` — the rules
+  and the dashboard fixes are committed but cannot deploy until
+  `FIREBASE_SERVICE_ACCOUNT` exists.
+
+## ✅ Approval-gated actions
+
+These do not execute until someone other than the requester approves that exact
+change, bound to a hash of its content:
+
+```
+policy.publish   policy.rollback   policy.assign   policy.unassign
+exception.grant  exception.revoke  enforcement.push
+feed.disable     feed.trust_change fleetfix.dispatch  tenant.delete
+```
+
+An action that is not in the registry is treated as disruptive. Forgetting to
+register a new destructive verb has to fail closed, not open.
 
 ## 📈 Scoring
 

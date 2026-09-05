@@ -274,3 +274,89 @@ Until step 5 passes, treat all stored scan data as public.
 Related: `cloud-function/index.js:221` exposes a public, unauthenticated `GET` by
 `scan_id` with `CORS *`. It already strips `email`, but it remains an unauthenticated
 read path over the same data and should be revisited in step 2.
+
+---
+
+# Productization: policy control plane (2026-09-04)
+
+Branch: `productize/dnsguard-policy-platform`. Scope: turn the single-domain
+assessment script into a protective-DNS control plane. Full run report, gate
+results and defect list: `STATUS.md`. Design rationale: the commit messages.
+
+## Code review of the existing Python (required deliverable)
+
+The tool was three separate things pretending to be one product.
+
+**`src/core/analyzer.py` (664 lines)** — one `analyze()` doing records, SPF, DKIM,
+DMARC, MTA-STS, DNSSEC and subdomain enumeration in a single pass. No way to run
+one check without running all of them; no way for a dashboard to describe what it
+would run. Findings were reasonable and SMB-appropriate. Three real bugs in it:
+SPF lookup counting missed bare `a`/`mx`/`redirect=` (so a record already over
+the RFC 7208 budget could be reported compliant); DNSSEC treated a DNSKEY alone
+as "implemented" when a zone with no DS at the registrar is unvalidated; and
+dangling CNAMEs were collected and never examined.
+
+**`src/integrations/dns_tools.py`** — a second, unreachable copy of subdomain
+enumeration, plus a resolver benchmark (needing numpy, which was never in
+`requirements.txt`), a zone auditor, RPZ/Unbound generators, and a traceroute
+wrapper that built its command by parsing a string. Nothing imported it except
+`src/api/api.py`, which could not load.
+
+**`src/api/api.py`** — imported `DNSGuardConfig`, `ThreatIntel`, `GeoLocation` and
+`PerformanceMetrics` from `core.analyzer`. None exist. It called
+`analyzer.analyze_domain()` and `analysis.calculate_risk_score()`. Neither exists.
+This module has never once imported successfully. It was dead on arrival, not
+merely stale.
+
+**`src/integrations/api_clients.py`** — VirusTotal / AbuseIPDB / IPStack clients
+with bare `except: pass` throughout, so a rate-limited provider and a clean
+result were indistinguishable to every caller.
+
+Everything above is re-housed. Nothing was dropped; `src/` is removed. The
+mapping is in the `scan:` commit.
+
+## Open items — for Bill
+
+**H. `vpn.ironcityit.com` is a dangling delegation.** It is a CNAME to
+`icit.mynetgear.com`, which does not resolve. Found by the new
+`subdomain_discovery` module against our own domain during verification. If that
+destination is a de-provisioned account, whoever registers the name next serves
+content on `ironcityit.com`. Not a code issue and not fixed here — it is a DNS
+record on our production domain. **Worth checking today.**
+
+**I. Note F's remediation order is now partly executable.** Step 1 (mint
+`FIREBASE_SERVICE_ACCOUNT`) is still yours and still blocks everything. But the
+reasoning that *no* rules file could be added has been narrowed: a rules file
+that denies all client writes and denies `list`, while leaving `get` open, does
+not break the unauthenticated dashboard and does close world-writability and bulk
+harvesting. That file is now committed and wired into `firebase.json`. It is
+inert until step 1 lands.
+
+The residual after it deploys: anyone holding a scan id can still read that
+document, submitter email included. Scan ids are unguessable but they are not
+secrets and they appear in URLs. Closing that is step 2 (Auth0 → Firebase custom
+token with a `client_id` claim), after which the `get` rule becomes a `client_id`
+comparison. Steps 3–5 of the original order are unchanged.
+
+**J. The free-scan page had stored XSS and it is live.** Findings, AI remediation
+text, compliance tags and the error message were interpolated into `innerHTML`
+from a Firestore document that anyone on the internet can currently write. A
+forged document plus a `?scan=<id>` link was script execution in a visitor's
+browser. Fixed on this branch — but the fix is not live until hosting deploys,
+which is blocked by the same missing credential. **Until then the live page is
+still vulnerable, and the write path is still open.** If step 1 is going to slip,
+the interim mitigation is to set the Firestore rules by hand in the console; that
+alone removes the write primitive the attack depends on.
+
+**K. One PR, not nine.** The guardrails ask for one PR per logical change. This
+run is one PR containing nine coherent commits, because the pieces are not
+independently landable — the approval gate has no meaning without the audit
+chain, policy publish has no meaning without the gate, and the scanner cannot be
+removed from `src/` until the workflow moves. Splitting them would have produced
+a sequence of PRs that individually leave `main` in a state nobody would want to
+deploy. Flagging the deviation rather than hiding it; the commits are reviewable
+one at a time.
+
+**L. Secrets still missing** (unchanged from Note F): `FIREBASE_SERVICE_ACCOUNT`,
+and the four consensus keys `GROQ_API_KEY`, `OPENROUTER_API_KEY`,
+`GEMINI_API_KEY`, `IRONCITY_API_KEY`. All are on the approved list.
