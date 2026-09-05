@@ -174,7 +174,7 @@
     <div class="header">
         <div class="header-inner">
             <div class="logo-section">
-                <div class="logo-icon"><img src="https://raw.githubusercontent.com/IronCityIT/ICIT-DNSGuard/main/dashboard/public/logo.png" alt="DNS Guard"></div>
+                <div class="logo-icon"><img src="/logo.png" alt="Iron City DNS Guard"></div>
                 <div class="logo-text">
                     <div class="logo-title">IRON CITY <span style="color: var(--text)">DNS GUARD</span></div>
                     <div class="logo-subtitle">DNS Security Intelligence</div>
@@ -378,19 +378,26 @@
             document.getElementById('loading').classList.add('active');
             document.getElementById('results').classList.add('hidden');
             try {
-                const snapshot = await db.collection('scans').where('scan_id', '==', id).limit(1).get();
-                const doc = snapshot.empty ? null : { exists: true, data: () => snapshot.docs[0].data() };
-                if (doc && doc.exists) { displayResults(doc.data()); }
-                else { alert('Scan not found.'); }
+                // A direct document read, not a collection query. The trigger
+                // function writes the record at scans/{scan_id}, so the id is
+                // all that is needed — and a `get` can be permitted by the
+                // security rules while `list` stays denied, which is what stops
+                // anyone enumerating every scan ever run.
+                const doc = await db.collection('scans').doc(id).get();
+                if (doc.exists) { displayResults(doc.data()); }
+                else { showScanError('That assessment could not be found. The link may have expired.'); }
             } catch (error) { console.error('Error:', error); }
             document.getElementById('loading').classList.remove('active');
             document.getElementById('results').classList.remove('hidden');
         }
         
         async function loadDemoData() {
+            // Addressed by document id for the same reason loadScan is. If the
+            // demo record is absent the page keeps its static demo banner
+            // rather than failing — this is decoration, not a load-bearing read.
             try {
-                const snapshot = await db.collection('scans').where('domain', '==', 'testphp.vulnweb.com').limit(1).get();
-                if (!snapshot.empty) { displayResults(snapshot.docs[0].data()); }
+                const doc = await db.collection('scans').doc('demo-scan').get();
+                if (doc.exists) { displayResults(doc.data()); }
             } catch (e) { console.log('Demo load:', e); }
         }
         
@@ -439,7 +446,12 @@
                 const remediation = ai.aggregated_remediation || [];
                 const remList = document.getElementById('ai-remediation-list');
                 if (remediation.length > 0) {
-                    remList.innerHTML = remediation.map(r => '<li>' + r + '</li>').join('');
+                    remList.textContent = '';
+                    remediation.forEach(r => {
+                        const li = document.createElement('li');
+                        li.textContent = r;
+                        remList.appendChild(li);
+                    });
                 } else {
                     document.getElementById('ai-remediation-section').style.display = 'none';
                 }
@@ -454,7 +466,13 @@
                     }
                 });
                 if (compTags.length > 0) {
-                    compGrid.innerHTML = compTags.map(t => '<span class="ai-compliance-tag">' + t + '</span>').join('');
+                    compGrid.textContent = '';
+                    compTags.forEach(t => {
+                        const span = document.createElement('span');
+                        span.className = 'ai-compliance-tag';
+                        span.textContent = t;
+                        compGrid.appendChild(span);
+                    });
                 } else {
                     document.getElementById('ai-compliance-section').style.display = 'none';
                 }
@@ -462,19 +480,36 @@
                 document.getElementById('ai-consensus').classList.add('hidden');
             }
             
-            // Findings
+            // Findings.
+            //
+            // Built as DOM nodes, not interpolated into innerHTML. Every value
+            // here comes out of a stored scan document, and a forged or
+            // tampered document would otherwise be stored XSS delivered by a
+            // link — `?scan=<id>` is a URL anyone can be sent.
             const findings = data.findings || [];
             const tbody = document.getElementById('findings-body');
-            if (findings.length > 0) {
-                tbody.innerHTML = findings.map(f => `
-                    <tr>
-                        <td><span class="severity-pill ${(f.severity || 'medium').toLowerCase()}">${(f.severity || 'MEDIUM').toUpperCase()}</span></td>
-                        <td>${f.category || 'General'}</td>
-                        <td>${f.title || f.finding || 'Finding'}</td>
-                        <td>${f.remediation || 'Review configuration'}</td>
-                    </tr>
-                `).join('');
-            }
+            tbody.textContent = '';
+            const cell = (text, className) => {
+                const td = document.createElement('td');
+                if (className) {
+                    const span = document.createElement('span');
+                    span.className = className;
+                    span.textContent = text;
+                    td.appendChild(span);
+                } else {
+                    td.textContent = text;
+                }
+                return td;
+            };
+            findings.forEach(f => {
+                const severity = String(f.severity || 'medium').toLowerCase();
+                const row = document.createElement('tr');
+                row.appendChild(cell(severity.toUpperCase(), 'severity-pill ' + severity));
+                row.appendChild(cell(f.category || 'General'));
+                row.appendChild(cell(f.title || f.finding || 'Finding'));
+                row.appendChild(cell(f.remediation || 'Review configuration'));
+                tbody.appendChild(row);
+            });
             
             // Charts
             const sevCounts = {critical: 0, high: 0, medium: 0, low: 0};
@@ -532,14 +567,8 @@
                 });
                 const result = await resp.json();
                 if (result.success) {
-                    document.getElementById('loading').innerHTML = `
-                        <div style="background: var(--bg-card); padding: 35px; border-radius: 12px; border: 1px solid var(--gold); max-width: 550px; margin: 0 auto;">
-                            <div style="font-size: 2.5rem; margin-bottom: 15px;">✅</div>
-                            <h3 style="color: var(--gold); margin-bottom: 15px;">Scan Started: ${domain}</h3>
-                            <p style="color: var(--text-muted); margin-bottom: 20px;">Results will appear in 30-60 seconds.</p>
-                            <button onclick="location.reload()" style="padding: 12px 30px; background: var(--gold); color: #000; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Refresh Results</button>
-                        </div>
-                    `;
+                    showStatusPanel('var(--gold)', '\u2705', 'Assessment started', domain,
+                                    'Results will appear in 30-60 seconds.', 'Refresh Results');
                     setTimeout(() => pollForResults(result.scan_id, domain), 5000);
                 } else {
                     alert('Error: ' + (result.error || 'Failed to start scan'));
@@ -549,16 +578,50 @@
             btn.innerHTML = '<span>🚀</span> Run Free Assessment';
         }
         
+        // One builder for both status panels.
+        //
+        // Everything variable goes in through textContent. `message` in
+        // particular can originate in the stored scan document's error field,
+        // which is not ours to trust, and the reload button is wired with
+        // addEventListener rather than an inline onclick, so this panel needs no
+        // script-src 'unsafe-inline'.
+        function showStatusPanel(colour, icon, heading, subject, message, buttonLabel) {
+            const loading = document.getElementById('loading');
+            loading.textContent = '';
+
+            const box = document.createElement('div');
+            box.style.cssText = 'background: var(--bg-card); padding: 35px; border-radius: 12px; ' +
+                'border: 1px solid ' + colour + '; max-width: 550px; margin: 0 auto;';
+
+            const iconEl = document.createElement('div');
+            iconEl.style.cssText = 'font-size: 2.5rem; margin-bottom: 15px;';
+            iconEl.textContent = icon;
+
+            const title = document.createElement('h3');
+            title.style.cssText = 'color: ' + colour + '; margin-bottom: 15px;';
+            title.textContent = subject ? heading + ': ' + subject : heading;
+
+            const body = document.createElement('p');
+            body.style.cssText = 'color: var(--text-muted); margin-bottom: 20px;';
+            body.textContent = message;
+
+            const button = document.createElement('button');
+            button.style.cssText = 'padding: 12px 30px; background: var(--gold); color: #000; ' +
+                'border: none; border-radius: 8px; cursor: pointer; font-weight: 600;';
+            button.textContent = buttonLabel;
+            button.addEventListener('click', () => location.reload());
+
+            box.appendChild(iconEl);
+            box.appendChild(title);
+            box.appendChild(body);
+            box.appendChild(button);
+            loading.appendChild(box);
+        }
+
         function showScanError(message) {
             document.getElementById('loading').classList.remove('active');
-            document.getElementById('loading').innerHTML = `
-                <div style="background: var(--bg-card); padding: 35px; border-radius: 12px; border: 1px solid var(--critical); max-width: 550px; margin: 0 auto;">
-                    <div style="font-size: 2.5rem; margin-bottom: 15px;">\u26a0\ufe0f</div>
-                    <h3 style="color: var(--critical); margin-bottom: 15px;">Assessment could not be completed</h3>
-                    <p style="color: var(--text-muted); margin-bottom: 20px;">${message}</p>
-                    <button onclick="location.reload()" style="padding: 12px 30px; background: var(--gold); color: #000; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Try Again</button>
-                </div>
-            `;
+            showStatusPanel('var(--critical)', '\u26a0\ufe0f', 'Assessment could not be completed',
+                            '', message, 'Try Again');
             document.getElementById('loading').classList.add('active');
         }
 
@@ -573,9 +636,9 @@
             const poll = async () => {
                 attempts++;
                 try {
-                    const snapshot = await db.collection('scans').where('scan_id', '==', scanId).limit(1).get();
-                    if (!snapshot.empty) {
-                        const data = snapshot.docs[0].data();
+                    const doc = await db.collection('scans').doc(scanId).get();
+                    if (doc.exists) {
+                        const data = doc.data();
                         // Terminal failure: the workflow always writes one now, so
                         // this branch is reachable instead of hanging.
                         if (data.status === 'failed') {

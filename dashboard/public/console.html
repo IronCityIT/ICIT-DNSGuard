@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iron City DNS Guard — Operator Console</title>
+<meta name="description" content="Policy, approvals, threat-feed provenance, analytics and evidence for Iron City DNS Guard.">
+<link rel="icon" href="/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="/console.css">
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <div class="brand">
+      <strong>Iron City DNS Guard</strong>
+      <span>Operator console</span>
+    </div>
+
+    <label class="visually-hidden" for="tenant">Client</label>
+    <input id="tenant" type="text" placeholder="client id" autocomplete="off" size="14">
+
+    <label class="visually-hidden" for="token">Access token</label>
+    <input id="token" type="password" placeholder="access token" autocomplete="current-password" size="18">
+
+    <button id="connect" class="primary" type="button">Connect</button>
+    <button id="refresh" type="button" title="Reload the current view">Refresh</button>
+    <span id="conn" class="pill">not connected</span>
+  </div>
+</header>
+
+<nav>
+  <div class="bar" role="tablist" aria-label="Console sections">
+    <button class="tab" role="tab" data-tab="overview"   aria-selected="true">Overview</button>
+    <button class="tab" role="tab" data-tab="policy"     aria-selected="false">Policy</button>
+    <button class="tab" role="tab" data-tab="approvals"  aria-selected="false">Approvals<span class="count" id="approval-count" hidden>0</span></button>
+    <button class="tab" role="tab" data-tab="sites"      aria-selected="false">Sites</button>
+    <button class="tab" role="tab" data-tab="feeds"      aria-selected="false">Threat feeds</button>
+    <button class="tab" role="tab" data-tab="analytics"  aria-selected="false">Analytics</button>
+    <button class="tab" role="tab" data-tab="alerts"     aria-selected="false">Alerts</button>
+    <button class="tab" role="tab" data-tab="exceptions" aria-selected="false">Exceptions</button>
+    <button class="tab" role="tab" data-tab="evidence"   aria-selected="false">Evidence</button>
+    <button class="tab" role="tab" data-tab="scan"       aria-selected="false">Assessment</button>
+  </div>
+</nav>
+
+<main>
+  <div id="global-banner" hidden></div>
+
+  <!-- Overview ------------------------------------------------------- -->
+  <section id="panel-overview" data-panel="overview">
+    <div class="panel-head">
+      <h2>Overview</h2>
+      <p>Live state of this client's protective DNS.</p>
+    </div>
+    <div id="overview-body"></div>
+  </section>
+
+  <!-- Policy --------------------------------------------------------- -->
+  <section id="panel-policy" data-panel="policy" hidden>
+    <div class="panel-head">
+      <h2>Policy</h2>
+      <p>Versions are immutable once submitted. Publishing and rolling back need a second person's approval.</p>
+    </div>
+    <div id="policy-body"></div>
+  </section>
+
+  <!-- Approvals ------------------------------------------------------ -->
+  <section id="panel-approvals" data-panel="approvals" hidden>
+    <div class="panel-head">
+      <h2>Approvals</h2>
+      <p>Changes that alter what resolves for real users. You cannot approve your own request.</p>
+    </div>
+    <div id="approvals-body"></div>
+  </section>
+
+  <!-- Sites ---------------------------------------------------------- -->
+  <section id="panel-sites" data-panel="sites" hidden>
+    <div class="panel-head">
+      <h2>Sites</h2>
+      <p>New sites start in monitor mode. Turning enforcement on — or off — is approval-gated.</p>
+    </div>
+    <div id="sites-body"></div>
+  </section>
+
+  <!-- Feeds ---------------------------------------------------------- -->
+  <section id="panel-feeds" data-panel="feeds" hidden>
+    <div class="panel-head">
+      <h2>Threat feeds</h2>
+      <p>Every block cites the feed, snapshot and line it came from. A stale snapshot cannot justify a new block.</p>
+    </div>
+    <div id="feeds-body"></div>
+  </section>
+
+  <!-- Analytics ------------------------------------------------------ -->
+  <section id="panel-analytics" data-panel="analytics" hidden>
+    <div class="panel-head">
+      <h2>Analytics</h2>
+      <p>Summarises a decision stream. Paste or load resolver decisions to analyse them.</p>
+    </div>
+    <div id="analytics-body"></div>
+  </section>
+
+  <!-- Alerts --------------------------------------------------------- -->
+  <section id="panel-alerts" data-panel="alerts" hidden>
+    <div class="panel-head">
+      <h2>Alerts</h2>
+      <p>Each alert carries the value, threshold and evidence that raised it.</p>
+    </div>
+    <div id="alerts-body"></div>
+  </section>
+
+  <!-- Exceptions ----------------------------------------------------- -->
+  <section id="panel-exceptions" data-panel="exceptions" hidden>
+    <div class="panel-head">
+      <h2>Exceptions</h2>
+      <p>Every exception expires. Granting or revoking one is approval-gated.</p>
+    </div>
+    <div id="exceptions-body"></div>
+  </section>
+
+  <!-- Evidence ------------------------------------------------------- -->
+  <section id="panel-evidence" data-panel="evidence" hidden>
+    <div class="panel-head">
+      <h2>Audit &amp; evidence</h2>
+      <p>The audit log is hash-chained. An evidence pack is verifiable independently of this console.</p>
+    </div>
+    <div id="evidence-body"></div>
+  </section>
+
+  <!-- Assessment ----------------------------------------------------- -->
+  <section id="panel-scan" data-panel="scan" hidden>
+    <div class="panel-head">
+      <h2>Assessment</h2>
+      <p>Choose what to assess. This list is the same one the command line runs from.</p>
+    </div>
+    <div id="scan-body"></div>
+  </section>
+</main>
+
+<script src="/console.js"></script>
+</body>
+</html>

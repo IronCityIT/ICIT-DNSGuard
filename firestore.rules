@@ -1,0 +1,59 @@
+rules_version = '2';
+
+// Iron City DNS Guard — Firestore security rules.
+//
+// Context, because this file's shape is a deliberate intermediate step and not
+// the end state. Until now this project carried the open test-mode rules it was
+// created with, which made every stored scan — including the submitter's email
+// address — world-readable, and every document world-writable. Anyone on the
+// internet could enumerate all scans, and forge or delete them.
+//
+// The end state is tenant-partitioned reads gated on an Auth0 -> Firebase custom
+// token carrying a client_id claim, matching the rules in ShadowScan and Threat
+// Inspector. That cannot ship yet: the public free-scan dashboard reads
+// Firestore directly with no authentication at all, so tenant-filtered rules
+// would return nothing and break the live funnel. Minting those tokens is step 2
+// of the remediation order in PRODUCTIZE_NOTES; this file is step 1 of what this
+// repo can do on its own.
+//
+// What it does change, today, without breaking anything:
+//
+//   * No client writes. At all. Results are written by storeScanResults through
+//     the Admin SDK, which bypasses these rules entirely, so nothing legitimate
+//     needs write access from a browser. This closes forging and deletion.
+//   * No `list`. A caller must already know a scan id to read that scan; they
+//     can no longer enumerate the collection. This closes bulk harvesting of
+//     every scan and every submitter email ever collected.
+//   * `get` remains open, because the free-scan page has no identity to check it
+//     against. It is narrowed to the scans collection and nothing else.
+//
+// Residual risk, stated plainly rather than left to be discovered: anyone
+// holding a scan id can still read that document, email address included. Scan
+// ids are unguessable (scan-<ms>-<9 random chars>) but they are not a secret and
+// they appear in URLs. Closing this needs authentication — step 2 — after which
+// the get rule below becomes `callerClientId() == resource.data.client_id` and
+// this comment can go.
+//
+// The control-plane API (dnsguard/api.py) never relies on these rules: it holds
+// its own tenant check on every route and refuses to start unauthenticated.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Everything not named below is denied outright, including any collection
+    // added later — a new collection must opt in here rather than inherit access.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /scans/{scanId} {
+      // Single-document reads only. `list` is deliberately absent: in Firestore
+      // `read` grants both get and list, so the two are split here on purpose.
+      allow get: if true;
+      allow list: if false;
+
+      // Writes come exclusively from the Cloud Function via the Admin SDK.
+      allow create, update, delete: if false;
+    }
+  }
+}
