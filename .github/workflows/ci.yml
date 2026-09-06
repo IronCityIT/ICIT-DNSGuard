@@ -95,3 +95,41 @@ jobs:
           path: gate-reports/
           retention-days: 14
           if-no-files-found: warn
+
+  exposure:
+    name: Live exposure has not regressed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Separate from the gates job on purpose. It reaches the public internet,
+    # which every other gate deliberately does not, and it answers a different
+    # question: not "is this change correct" but "is the boundary these projects
+    # present to the world still what we recorded".
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compare the live fleet against the recorded baseline
+        # Unauthenticated GETs only, against our own projects, reading status
+        # codes. It fails on a regression and reports the known state without
+        # failing — see exposure-baseline.json for why each entry is what it is.
+        run: python3 tools/check-exposure.py --baseline exposure-baseline.json --all
+
+      - name: Record the comparison
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p gate-reports
+          python3 tools/check-exposure.py --baseline exposure-baseline.json --all --json \
+            > gate-reports/exposure.json || true
+
+      - name: Upload the comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exposure-comparison
+          path: gate-reports/exposure.json
+          retention-days: 14
+          if-no-files-found: warn

@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "What each Firebase project was verified to expose to an unauthenticated caller, and why.",
+    "Checked by tools/check-exposure.py --baseline exposure-baseline.json --all, which fails only",
+    "on a regression: a posture weaker than the one recorded here. The known-and-recorded state does",
+    "not fail the build, because a permanently red gate for a reason the author of an unrelated pull",
+    "request cannot act on is a gate people learn to ignore.",
+    "",
+    "Postures, worst to best:",
+    "  no_rules        an unknown collection is readable — the test-mode rules a project is created with",
+    "  enumerable      rules deployed, but the scans collection can still be listed by anyone",
+    "  readable_by_id  single-document reads only; enumeration denied",
+    "  closed          nothing readable without authentication",
+    "",
+    "Three of these four entries are worse than they should be, and none of them can be fixed from",
+    "this repository: closing them is a console action or a deploy credential, both of which need a",
+    "person. Tighten an entry the moment its project improves — an improvement is reported, not",
+    "silently accepted, precisely so the gain gets held."
+  ],
+  "verified_at": "2026-09-06",
+  "verified_by": "tools/check-exposure.py, read-only probes",
+  "projects": [
+    {
+      "project_id": "icit-shadowscan",
+      "collection": "scans",
+      "expected": "closed",
+      "note": "The target state, and proof it is reachable without FIREBASE_SERVICE_ACCOUNT. Whatever was done here is the pattern for the other three."
+    },
+    {
+      "project_id": "icit-dnsguard",
+      "collection": "scans",
+      "expected": "enumerable",
+      "note": "34 stored scans listable unauthenticated, carrying email, client_name and domain. firestore.rules in this repo denies list and would close it; it is not what is deployed. Blocked on FIREBASE_SERVICE_ACCOUNT or a console paste."
+    },
+    {
+      "project_id": "ironcity-attacksimpro",
+      "collection": "scans",
+      "expected": "enumerable",
+      "note": "23 stored documents listable unauthenticated. Review-only product; flagged, not changed from here."
+    },
+    {
+      "project_id": "iron-city-it-threatinspector",
+      "collection": "scans",
+      "expected": "no_rules",
+      "note": "An unknown collection answers 404: this project still carries the rules it was created with. 25 stored documents. The worst posture in the fleet, and its repository has a rules file ready to deploy."
+    }
+  ]
+}

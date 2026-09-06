@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from dnsguard.exposure import (
     ABSENT_DOCUMENT_ID,
+    POSTURE_RANK,
     UNUSED_COLLECTION,
     check_exposure,
     collection_url,
+    compare_to_baseline,
     document_url,
+    posture,
 )
 
 
@@ -130,3 +133,86 @@ def test_the_probe_target_must_be_https() -> None:
         except ValueError:
             continue
         raise AssertionError(f"accepted a target it must refuse: {hostile}")
+
+
+# --------------------------------------------------------------------------
+# The regression ratchet. The exposure cannot be closed from here, so the whole
+# value of these tests is that the recorded state cannot quietly get worse.
+# --------------------------------------------------------------------------
+
+
+def report_for(posture_name: str, project: str = "p"):
+    """Build a report in a named posture, via the probe statuses that produce it."""
+    statuses = {
+        # unknown collection readable -> no rules in force
+        "no_rules": {UNUSED_COLLECTION: 404, "pageSize": 200},
+        "enumerable": {UNUSED_COLLECTION: 403, "pageSize": 200},
+        "readable_by_id": {UNUSED_COLLECTION: 403, "pageSize": 403},
+        "closed": {UNUSED_COLLECTION: 403, "pageSize": 403},
+    }[posture_name]
+    default = 403 if posture_name == "closed" else 404
+    return check_exposure(probe_returning(statuses, default=default), project)
+
+
+def test_each_posture_is_recognised_from_its_probe_results() -> None:
+    for name in ("no_rules", "enumerable", "readable_by_id", "closed"):
+        assert posture(report_for(name)) == name
+
+
+def test_the_recorded_state_does_not_fail_the_build() -> None:
+    # Every project in the fleet is currently worse than it should be, and none
+    # of it is fixable from this repository. Failing here would paint every
+    # unrelated pull request red.
+    result = compare_to_baseline(report_for("enumerable"), "enumerable")
+    assert result.verdict == "unchanged"
+    assert result.failed is False
+
+
+def test_a_weaker_boundary_than_recorded_is_a_regression() -> None:
+    result = compare_to_baseline(report_for("no_rules"), "enumerable")
+    assert result.verdict == "regressed"
+    assert result.failed is True
+
+
+def test_shadowscan_losing_its_rules_would_fail() -> None:
+    # The one project that is closed. If it ever stops being closed, that is
+    # exactly the event this check exists to catch.
+    result = compare_to_baseline(report_for("enumerable"), "closed")
+    assert result.failed is True
+
+
+def test_an_improvement_is_reported_and_does_not_fail() -> None:
+    result = compare_to_baseline(report_for("closed"), "enumerable")
+    assert result.verdict == "improved"
+    assert result.failed is False
+    assert "tighten" in result.note
+
+
+def test_a_probe_that_did_not_complete_is_not_a_regression() -> None:
+    # A network failure must not read as the boundary having collapsed, or the
+    # check becomes noise and stops being read.
+    report = check_exposure(probe_returning({}, default=0), "p")
+    result = compare_to_baseline(report, "closed")
+    assert result.verdict == "unknown"
+    assert result.failed is False
+
+
+def test_a_baseline_naming_an_unknown_posture_is_refused_not_guessed() -> None:
+    result = compare_to_baseline(report_for("closed"), "mostly-fine")
+    assert result.verdict == "unrecognised"
+    assert result.failed is False
+
+
+def test_the_shipped_baseline_matches_what_was_verified() -> None:
+    """The committed baseline must describe postures this checker understands."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parent.parent / "exposure-baseline.json"
+    baseline = json.loads(path.read_text())
+    assert baseline["projects"], "the baseline names no projects"
+    for entry in baseline["projects"]:
+        assert entry["expected"] in POSTURE_RANK, entry
+        # Every entry has to say why it is what it is, or the file decays into a
+        # list of codes nobody can act on.
+        assert entry.get("note"), f"{entry['project_id']} has no note"

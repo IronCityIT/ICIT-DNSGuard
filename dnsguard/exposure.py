@@ -218,3 +218,127 @@ def check_exposure(
             )
         )
     return report
+
+
+# --------------------------------------------------------------------------
+# Regression ratchet.
+#
+# The exposure this checker found cannot be closed from here: it needs a
+# credential this environment does not hold, and deploying a security boundary
+# to a live client-facing system is a decision for a person. What *can* be done
+# is make the state impossible to lose track of.
+#
+# A baseline records what each project was verified to allow, and why it is
+# still allowed. Comparing the live state against it every CI run gives three
+# useful answers rather than one:
+#
+#   * unchanged — still exposed, still known, still waiting on the same person
+#   * regressed — something got worse, which is the case worth failing a build
+#   * improved  — the fix landed, and the baseline should be tightened to match
+#
+# The build fails only on a regression. Failing on the known-and-recorded state
+# would paint every unrelated pull request red for a reason its author cannot
+# act on, and a permanently red gate is one nobody reads.
+# --------------------------------------------------------------------------
+
+
+# Ordered worst to best. Comparing positions makes "worse" a defined thing
+# rather than a judgement call at each call site.
+POSTURE_RANK = (
+    "no_rules",  # an unknown collection is readable: test-mode
+    "enumerable",  # rules deployed, but the collection can still be listed
+    "readable_by_id",  # single-document reads only
+    "closed",  # nothing readable unauthenticated
+)
+
+
+def posture(report: ExposureReport) -> str:
+    """Reduce a report to one comparable word."""
+    if not report.rules_deployed:
+        return "no_rules"
+    if report.list_permitted:
+        return "enumerable"
+    if report.get_permitted:
+        return "readable_by_id"
+    return "closed"
+
+
+def posture_rank(name: str) -> int:
+    try:
+        return POSTURE_RANK.index(name)
+    except ValueError:
+        return -1
+
+
+@dataclass(frozen=True)
+class Comparison:
+    project_id: str
+    expected: str
+    observed: str
+    verdict: str
+    """One of: unchanged, improved, regressed, unknown, unrecognised."""
+
+    note: str = ""
+
+    @property
+    def failed(self) -> bool:
+        # `unknown` is not a failure: a probe that could not complete says
+        # nothing about the boundary, and treating a network blip as a
+        # regression would train people to ignore this check.
+        return self.verdict == "regressed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "expected": self.expected,
+            "observed": self.observed,
+            "verdict": self.verdict,
+            "note": self.note,
+        }
+
+
+def compare_to_baseline(
+    report: ExposureReport,
+    expected: str,
+    note: str = "",
+) -> Comparison:
+    """Judge a live report against what the baseline says it should be."""
+    observed = posture(report)
+
+    # A probe that never completed leaves the posture underdetermined. Say so
+    # rather than inventing a verdict from a partial read.
+    if any(p.status_code == 0 for p in report.probes):
+        return Comparison(
+            project_id=report.project_id,
+            expected=expected,
+            observed="unknown",
+            verdict="unknown",
+            note="a probe did not complete; the live state was not established",
+        )
+
+    if posture_rank(expected) < 0:
+        return Comparison(
+            project_id=report.project_id,
+            expected=expected,
+            observed=observed,
+            verdict="unrecognised",
+            note=f"baseline names a posture this checker does not know: {expected!r}",
+        )
+
+    if observed == expected:
+        return Comparison(report.project_id, expected, observed, "unchanged", note)
+    if posture_rank(observed) > posture_rank(expected):
+        return Comparison(
+            project_id=report.project_id,
+            expected=expected,
+            observed=observed,
+            verdict="improved",
+            note="tighten the baseline to hold this gain",
+        )
+    return Comparison(
+        project_id=report.project_id,
+        expected=expected,
+        observed=observed,
+        verdict="regressed",
+        note="the live boundary is weaker than the baseline records",
+    )
