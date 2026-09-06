@@ -49,7 +49,7 @@ Small to medium businesses who:
 ```
 GitHub Actions (dns-analysis.yml)
     ↓  selects modules from the registry
-tools/scan.py  →  module_framework/modules/*   (10 selectable checks)
+tools/scan.py  →  module_framework/modules/*   (11 selectable checks)
     ↓  one report, one schema
 AI Consensus Engine (IronCityIT/consensus-engine)  [optional]
     ↓
@@ -78,6 +78,7 @@ dmarc_audit                policy, enforcement level and reporting
 transport_security_audit   MTA-STS and TLS-RPT
 dnssec_audit               signing AND the delegation that makes it count
 subdomain_discovery        public host inventory, dangling aliases, exposed internals
+alias_takeover             whether a dangling alias could be claimed, and by whom
 resolver_performance       latency and loss across the major public resolvers
 reputation_lookup          external reputation, with attribution
 network_path               network path to the domain's servers

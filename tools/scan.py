@@ -50,6 +50,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--list-modules", action="store_true", help="print the catalogue and exit")
     parser.add_argument(
+        "--nameservers",
+        default="",
+        help=(
+            "comma list of resolvers to query instead of the host's. Worth setting: some "
+            "resolvers do not report NXDOMAIN for names that do not exist, and checks that "
+            "distinguish absence from misconfiguration report inconclusive rather than guess"
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="validate the target and module selection, then stop without querying anything",
@@ -94,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     findings: list[Any] = []
     errors: list[str] = []
     ctx: dict[str, Any] = {"client": args.client, "scan_id": scan_id}
+    if args.nameservers:
+        ctx["nameservers"] = [ns.strip() for ns in args.nameservers.split(",") if ns.strip()]
 
     if not args.dry_run:
         for target in targets:

@@ -37,6 +37,8 @@ CATEGORY = {
     "dnssec_audit": "DNS Configuration",
     "dns_records": "DNS Configuration",
     "subdomain_discovery": "Attack Surface",
+    "alias_takeover": "Attack Surface",
+    "reputation_lookup": "Threat Intelligence",
     "resolver_performance": "Availability",
     "network_path": "Availability",
 }
@@ -106,7 +108,13 @@ def build(
 
 def _client_finding(finding: Any) -> dict[str, Any]:
     evidence = dict(getattr(finding, "evidence", None) or {})
-    remediation = evidence.pop("remediation", "")
+    # `Finding.remediation` is the contract base.py documents — "every
+    # non-informational finding states what to do about it, in the finding
+    # itself". Older modules put it in evidence instead, so that is still read as
+    # a fallback; without the field itself being read first, any module using the
+    # documented way rendered a blank remediation to the client.
+    remediation = getattr(finding, "remediation", "") or evidence.pop("remediation", "")
+    evidence.pop("remediation", None)
     return {
         "severity": finding.severity,
         "category": CATEGORY.get(finding.module, "General"),
@@ -116,6 +124,15 @@ def _client_finding(finding: Any) -> dict[str, Any]:
         "business_impact": getattr(finding, "detail", ""),
         "module": finding.module,
         "target": getattr(finding, "target", ""),
+        # The specific thing this is about, when it is narrower than the scan
+        # target. Three findings on three hosts all reading "ironcityit.com" is
+        # not a report somebody can act from.
+        "asset": getattr(finding, "asset", "") or getattr(finding, "target", ""),
+        # How firmly this is known. Dropping it rendered "we could not check
+        # this" identically to "we proved this", which is the one distinction a
+        # client most needs from a security report.
+        "confidence": getattr(finding, "confidence", "confirmed"),
+        "fingerprint": finding.fingerprint() if hasattr(finding, "fingerprint") else "",
         "evidence": evidence,
     }
 

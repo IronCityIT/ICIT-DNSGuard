@@ -110,3 +110,60 @@ def find_txt(res: dns.resolver.Resolver, name: str, prefix: str) -> str:
         if txt.lower().startswith(prefix.lower()):
             return txt
     return ""
+
+
+#: Why a lookup produced no usable answer. The distinction matters for takeover
+#: analysis and is lost by `query`, which collapses all of these to [].
+#:   ok        records were returned
+#:   nxdomain  the name does not exist anywhere in the DNS
+#:   nodata    the name exists but carries no record of this type
+#:   error     the question could not be answered (timeout, SERVFAIL, no resolver)
+RESOLUTIONS = ("ok", "nxdomain", "nodata", "error")
+
+
+def resolution(res: dns.resolver.Resolver, name: str, rtype: str = "A") -> tuple[str, list[str]]:
+    """Resolve `name`, reporting *why* when nothing came back.
+
+    `query` treats NXDOMAIN, NODATA and a timeout identically, which is right for
+    "does this domain publish a CAA record" and wrong for anything reasoning
+    about whether a name is claimable. NXDOMAIN means the name does not exist and
+    something could be put there; NODATA means it exists and is merely missing an
+    address; an error means we do not know, and must not be reported as either.
+    """
+    try:
+        answers = res.resolve(name, rtype)
+    except dns.resolver.NXDOMAIN:
+        return "nxdomain", []
+    except dns.resolver.NoAnswer:
+        return "nodata", []
+    except Exception:
+        # SERVFAIL, timeouts, a lame delegation: unknown, and deliberately not
+        # folded into nxdomain. Guessing here invents takeovers that do not exist.
+        return "error", []
+    return "ok", [str(r).strip('"') for r in answers]
+
+
+def zone_apex(res: dns.resolver.Resolver, name: str) -> str:
+    """The closest enclosing zone apex for `name` — the zone that serves it.
+
+    Walks *down* from the name itself, label by label, asking for SOA, and stops
+    at the first answer. That is the nearest zone cut, which is what answers
+    "who would somebody have to go to in order to create this name": for
+    `icit.mynetgear.com` it is `mynetgear.com`, and for a provider that serves
+    each region separately it is that regional zone rather than the brand apex.
+
+    The TLD is never a candidate. A bare TLD always has an SOA, and "you would
+    have to claim .com" is not an answer anybody can act on.
+
+    Returns "" when nothing between the name and the TLD answers, which is
+    itself the interesting case: the registrable domain is not registered at all.
+    """
+    labels = name.rstrip(".").split(".")
+    # Stop before the TLD: a bare TLD always has an SOA and answering "com" is
+    # never the useful answer.
+    for cut in range(len(labels) - 1):
+        candidate = ".".join(labels[cut:])
+        status, _ = resolution(res, candidate, "SOA")
+        if status == "ok":
+            return candidate
+    return ""
