@@ -48,7 +48,9 @@ from .compliance import assess, coverage
 from .errors import ApprovalRequiredError, DnsGuardError, TenantIsolationError, ValidationError
 from .evidence import EvidenceExporter
 from .exceptions_policy import ExceptionService
-from .feeds import FeedRegistry
+from .feeds import FeedFetcher, FeedRegistry
+from .fetcher import HttpFetcher
+from .maintenance import MaintenanceRunner
 from .policy import PolicyService, Rule
 from .resilience import BreakerRegistry, try_call
 from .store import DocumentStore, JsonFileStore, MemoryStore
@@ -164,6 +166,7 @@ class Services:
     directory: TenantDirectory
     evidence: EvidenceExporter
     breakers: BreakerRegistry
+    maintenance: MaintenanceRunner
 
     @classmethod
     def build(cls, store: DocumentStore | None = None, clock: Clock | None = None) -> Services:
@@ -191,6 +194,24 @@ class Services:
             exceptions=exceptions,
             clock=clock,
         )
+        breakers = BreakerRegistry(clock=clock)
+        # A fetcher is wired in only when outbound fetching is wanted. Left off,
+        # maintenance reports feeds as "not attempted" rather than implying they
+        # are healthy — see MaintenanceRunner._refresh_feeds.
+        fetcher = (
+            FeedFetcher(registry=feeds, fetch=HttpFetcher(), clock=clock, breakers=breakers)
+            if os.environ.get("DNSGUARD_FETCH_FEEDS", "").lower() in ("1", "true", "yes")
+            else None
+        )
+        maintenance = MaintenanceRunner(
+            registry=feeds,
+            fetcher=fetcher,
+            exceptions=exceptions,
+            alerts=alerts,
+            gate=gate,
+            audit=audit,
+            clock=clock,
+        )
         return cls(
             store=store,
             clock=clock,
@@ -202,7 +223,8 @@ class Services:
             alerts=alerts,
             directory=directory,
             evidence=evidence,
-            breakers=BreakerRegistry(clock=clock),
+            breakers=breakers,
+            maintenance=maintenance,
         )
 
 
@@ -464,9 +486,16 @@ def _register_routes(  # noqa: C901 - a route table; splitting it hides the surf
     @app.get(API_PREFIX + "/tenants/{tenant_id}/sites/{site_id}/decide")
     def decide(site_id: str, name: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
         """What would happen to this name at this site, and why. Read-only — it
-        is the "explain this block" endpoint, not an enforcement path."""
+        is the "explain this block" endpoint, not an enforcement path.
+
+        The indicator index is loaded from what was persisted, so category and
+        feed rules resolve against the entries this tenant's feeds actually
+        carry. Without it those rules match nothing, and the endpoint reports a
+        clean allow for a name sitting on three blocklists.
+        """
         tenant_id, _ = scope
-        return svc.directory.decide(tenant_id, site_id, name).to_dict()
+        index = svc.feeds.load_index(tenant_id)
+        return svc.directory.decide(tenant_id, site_id, name, index).to_dict()
 
     @app.put(API_PREFIX + "/tenants/{tenant_id}/policy")
     def bind_tenant_policy(
@@ -605,6 +634,20 @@ def _register_routes(  # noqa: C901 - a route table; splitting it hides the surf
             "degraded": result.degraded,
             "reason": result.error if result.degraded else "",
         }
+
+    @app.post(API_PREFIX + "/tenants/{tenant_id}/maintenance")
+    def maintenance(scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        """Run one maintenance pass: refresh feeds, record lapsed exceptions,
+        evaluate alert rules, verify the audit chain.
+
+        Exposed so an external scheduler can drive the loop without shell access
+        to the host. Non-disruptive by construction — every step either refreshes
+        data or records an expiry the tenant already agreed to — so it needs the
+        operator role but no approval.
+        """
+        tenant_id, caller = scope
+        require(caller, OPERATOR)
+        return svc.maintenance.run(tenant_id)
 
     @app.get(API_PREFIX + "/tenants/{tenant_id}/feeds/{feed_id}/snapshots")
     def snapshots(feed_id: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
