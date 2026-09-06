@@ -271,7 +271,7 @@ def an_index(clock, category="malware", stale_after=86400):
     )
     fetcher = FeedFetcher(
         registry=registry,
-        fetch=lambda url: FetchResponse(FEED_BODY),
+        fetch=lambda url, etag="": FetchResponse(FEED_BODY),
         clock=clock,
         breakers=BreakerRegistry(clock=clock),
         policy=RetryPolicy(attempts=1, jitter=False),

@@ -32,6 +32,7 @@ from .store import DocumentStore
 
 FEED_COLLECTION = "feeds"
 SNAPSHOT_COLLECTION = "feedsnapshots"
+INDICATOR_COLLECTION = "feedindicators"
 
 # How much a match from this publisher is worth. A community list is useful for
 # reporting and a poor basis for blocking a client's mail provider.
@@ -117,7 +118,10 @@ class FeedSnapshot:
     sha256: str
     entry_count: int
     byte_count: int
-    status: str = "ok"  # ok | failed
+    # ok         a body was fetched and parsed
+    # unchanged  the publisher answered 304; the previous entries still stand
+    # failed     nothing usable came back
+    status: str = "ok"
     error: str = ""
     etag: str = ""
     parser: str = "domains"
@@ -264,8 +268,82 @@ class FeedRegistry:
         return sorted(snaps, key=lambda s: s.fetched_at)
 
     def latest_snapshot(self, tenant_id: str, feed_id: str) -> FeedSnapshot | None:
-        usable = [s for s in self.snapshots(tenant_id, feed_id) if s.status == "ok"]
+        """The newest snapshot that confirmed the feed's contents.
+
+        "unchanged" counts. A publisher answering 304 has confirmed the list is
+        current just as firmly as one that re-sent it, and excluding those would
+        let a stable, correctly-cached feed age into staleness and stop being
+        able to justify a block.
+        """
+        usable = [s for s in self.snapshots(tenant_id, feed_id) if s.status in ("ok", "unchanged")]
         return usable[-1] if usable else None
+
+    # ── indicators ──────────────────────────────────────────────────────────
+
+    def store_indicators(
+        self,
+        tenant_id: str,
+        feed_id: str,
+        snapshot: FeedSnapshot,
+        indicators: builtins.list[Indicator],
+    ) -> None:
+        """Persist a feed's entries, so the decision path survives a restart.
+
+        Without this the indicator index lives only in the process that fetched
+        it, and a control plane that restarts makes decisions against nothing
+        until the next refresh window — silently, because an empty index looks
+        exactly like a clean lookup.
+
+        Stored as (line_no, value) pairs rather than whole Indicator records: the
+        feed id, snapshot id, checksum, category and tier are identical for every
+        entry, so repeating them per row would multiply a 200k-line list by an
+        order of magnitude for nothing.
+        """
+        self.store.put(
+            tenant_id,
+            INDICATOR_COLLECTION,
+            feed_id,
+            {
+                "feed_id": feed_id,
+                "snapshot_id": snapshot.snapshot_id,
+                "sha256": snapshot.sha256,
+                "category": indicators[0].category if indicators else "",
+                "trust_tier": indicators[0].trust_tier if indicators else "",
+                "count": len(indicators),
+                "entries": [[i.line_no, i.value] for i in indicators],
+            },
+        )
+
+    def indicators(self, tenant_id: str, feed_id: str) -> builtins.list[Indicator]:
+        """Rehydrate a feed's stored entries."""
+        document = self.store.get(tenant_id, INDICATOR_COLLECTION, feed_id)
+        if document is None:
+            return []
+        return [
+            Indicator(
+                value=value,
+                feed_id=document["feed_id"],
+                snapshot_id=document["snapshot_id"],
+                sha256=document["sha256"],
+                line_no=int(line_no),
+                category=document.get("category", ""),
+                trust_tier=document.get("trust_tier", ""),
+            )
+            for line_no, value in document.get("entries", [])
+        ]
+
+    def load_index(self, tenant_id: str, include_disabled: bool = False) -> IndicatorIndex:
+        """Rebuild the lookup index for a tenant from what was persisted.
+
+        A disabled feed's entries are excluded by default: disabling a feed is an
+        approval-gated act meant to stop it affecting decisions, and leaving its
+        indicators in the index would make that act do nothing.
+        """
+        index = IndicatorIndex(registry=self, tenant_id=tenant_id)
+        for feed in self.list(tenant_id, include_disabled=include_disabled):
+            for indicator in self.indicators(tenant_id, feed.id):
+                index.add(indicator)
+        return index
 
     def is_stale(self, feed: FeedSource, snapshot: FeedSnapshot | None) -> bool:
         """A feed with no successful snapshot is stale by definition."""
@@ -298,7 +376,10 @@ class FeedRegistry:
         return rows
 
 
-HttpFetch = Callable[[str], "FetchResponse"]
+# (url, etag) -> FetchResponse. The etag is the one from the last successful
+# snapshot, or "" when there is none; a publisher that honours it answers 304 and
+# saves both sides the transfer.
+HttpFetch = Callable[[str, str], "FetchResponse"]
 
 
 @dataclass
@@ -326,8 +407,11 @@ class FeedFetcher:
     def refresh(self, tenant_id: str, feed_id: str) -> tuple[FeedSnapshot, list[Indicator]]:
         feed = self.registry.get(tenant_id, feed_id)
         breaker = self.breakers.get(f"feed:{feed.id}")
+        previous = self.registry.latest_snapshot(tenant_id, feed.id)
+        etag = previous.etag if previous else ""
+
         result = try_call(
-            lambda: self.fetch(feed.url),
+            lambda: self.fetch(feed.url, etag),
             policy=self.policy,
             breaker=breaker,
             clock=self.clock,
@@ -353,6 +437,28 @@ class FeedFetcher:
             return snapshot, []
 
         response: FetchResponse = result.value
+
+        # 304: the publisher confirmed the list has not changed. That is a
+        # successful refresh, not an absent one — the previous entries stand and
+        # the freshness clock restarts. Reading the empty body as a feed with no
+        # entries would silently drop every block the feed was supporting.
+        if response.status_code == 304 and previous is not None:
+            snapshot = FeedSnapshot(
+                feed_id=feed.id,
+                snapshot_id=snapshot_id,
+                fetched_at=now,
+                source_url=feed.url,
+                sha256=previous.sha256,
+                entry_count=previous.entry_count,
+                byte_count=0,
+                status="unchanged",
+                etag=previous.etag or response.etag,
+                parser=feed.fmt,
+                attempts=result.attempts,
+            )
+            self.registry.record_snapshot(tenant_id, snapshot)
+            return snapshot, self.registry.indicators(tenant_id, feed.id)
+
         if response.status_code != 200:
             snapshot = FeedSnapshot(
                 feed_id=feed.id,
@@ -400,6 +506,7 @@ class FeedFetcher:
             )
             for line_no, domain in entries
         ]
+        self.registry.store_indicators(tenant_id, feed.id, snapshot, indicators)
         return snapshot, indicators
 
     def refresh_all(self, tenant_id: str) -> dict[str, Any]:
@@ -421,7 +528,9 @@ class FeedFetcher:
             "refreshed": results,
             "indicator_count": len(indicators),
             "indicators": indicators,
-            "degraded": [r["feed_id"] for r in results if r["status"] != "ok"],
+            "unchanged": [r["feed_id"] for r in results if r["status"] == "unchanged"],
+            # Only a genuine failure is degradation. A 304 is the cache working.
+            "degraded": [r["feed_id"] for r in results if r["status"] == "failed"],
         }
 
 
