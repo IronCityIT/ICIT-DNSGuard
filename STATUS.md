@@ -145,3 +145,133 @@ DNSGUARD_API_TOKEN=dev python3 -c "import uvicorn;from dnsguard.api import creat
 5. **Auth0 → Firebase custom token** with a `client_id` claim — step 2 of the remediation
    order, after which the `get` rule becomes a tenant comparison and the last
    unauthenticated read path closes.
+
+---
+
+# Verification run — 2026-09-06
+
+**Branch:** `productize/dnsguard-exposure-verification` · **Base:** `main`
+**Read-only.** Three unauthenticated GETs per project against the Firestore REST
+API, plus DNS lookups. No write was attempted anywhere, nothing was deployed,
+and no client's scan document was read — the document probes use an id this
+product does not mint, and where a page of results was returned only the
+document count and the *field names* were taken from it. No stored value was
+read, printed or written down.
+
+This run went and checked the two items the previous run left at the top of
+"what to do next". Both were still open. One of them is not what this document
+said it was.
+
+## Correction — the live rules are deployed, and they are not the ones in this repo
+
+The blockers table above records the live project as carrying "open test-mode
+rules (world-readable **and** world-writable)", and records `firestore.rules` as
+inert until `FIREBASE_SERVICE_ACCOUNT` lands. Neither is accurate today.
+
+| Probe | Result | What it means |
+|---|---|---|
+| `get` a scan id that does not exist | `404` | Single-document reads are permitted |
+| `list` the scans collection | **`200`** | **Enumeration is permitted** |
+| `get` a collection this product never writes | `403` | **A rules file is deployed** — test-mode would answer `404` |
+
+A rules file *is* in force: the catch-all deny works. But it is not the file in
+this repository, because the committed rules set `allow list: if false` and
+listing plainly succeeds. Something narrower than test-mode was deployed at some
+point, and it still permits the harvesting the committed file was written to
+close.
+
+**One unauthenticated request returns all 34 stored scans**, and those documents
+carry `email`, `client_name`, `domain` and `client_id` — every person who used
+the free scan, their address, their domain, and the findings against it.
+
+The write posture is **unverified and stated as such**: proving a write path is
+open means writing to a live client-facing system, which this run would not do.
+The earlier "world-writable" claim was inferred from test-mode rules that are
+demonstrably no longer the whole story, so it should not be repeated until it is
+either tested deliberately or the rules are read from the console.
+
+## Fleet state — the same probe against every product project
+
+| Project | Rules deployed | Single-doc read | **Enumeration** | Stored docs | Identifying fields exposed |
+|---|---|---|---|---|---|
+| `icit-shadowscan` | yes | closed | **closed** | — | none reachable |
+| `icit-dnsguard` | yes | open | **OPEN** | 34 | `email`, `client_name`, `domain`, `client_id` |
+| `ironcity-attacksimpro` | yes | open | **OPEN** | 23 | none in the returned page |
+| `iron-city-it-threatinspector` | **NO — test-mode** | open | **OPEN** | 25 | `client_id`, `target` |
+
+Two things follow, and the second is the more useful one.
+
+**Threat Inspector is in the worst position**, not this product: an unknown
+collection answers `404` there, which is how a project behaves when it still
+carries the rules it was created with. Anything a rules file would deny is
+allowed there today.
+
+**ShadowScan is closed, on the same fleet, with the same missing service
+account.** Whatever was done there did not need `FIREBASE_SERVICE_ACCOUNT`, so
+"we cannot close this until the secret is minted" is not true as a general
+claim. Its rules are the pattern to copy, and copying them is a console action
+measured in minutes.
+
+## Correction — the consensus secrets are no longer missing
+
+The blockers table lists `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`
+and `IRONCITY_API_KEY` as absent. All four are present on this repository, set
+`2026-08-25`, along with `STORE_SCAN_RESULTS_URL` and
+`DNSGUARD_CLOUD_FUNCTION_URL`. The `ai-consensus` blocker is stale.
+
+`FIREBASE_SERVICE_ACCOUNT` is still genuinely absent, and no Firebase or gcloud
+credential exists in this environment, so deploying remains impossible from
+here. That one is real.
+
+## `vpn.ironcityit.com` — confirmed, with the mechanism named
+
+Item 1 of the previous run's next-steps list. Still live, and worse than
+"does not resolve":
+
+```
+vpn.ironcityit.com.   CNAME   icit.mynetgear.com.     <- record still published
+icit.mynetgear.com.   A       NXDOMAIN                <- destination is gone
+mynetgear.com.        SOA     ns2.no-ip.com.          <- self-service dynamic DNS
+```
+
+The destination sits on a **self-service dynamic-DNS service**, where hostnames
+are claimed by whoever registers them. An `NXDOMAIN` there means the name is
+unregistered. Whoever claims `icit` on that service controls what
+`vpn.ironcityit.com` answers — on a hostname called *vpn*, which is exactly the
+name a staff member or a client would trust with credentials.
+
+Confirmed by this product's own `subdomain_discovery` module against
+`ironcityit.com`: 20 hosts resolve, and this is the only dangling alias among
+them. No attempt was made to claim the destination — that is an action against a
+third party's service and needs a person.
+
+**Remediation is one DNS change: delete the record, or re-claim the name.**
+
+## What this run added
+
+| File | What it is |
+|---|---|
+| `dnsguard/exposure.py` | Turns three unauthenticated probes into a verdict. Injected transport, so the tests never touch the network |
+| `tools/check-exposure.py` | `python3 tools/check-exposure.py --project icit-dnsguard`. Exits non-zero on a high finding, so CI can gate on it once the rules are correct |
+| `tests/test_exposure.py` | 10 tests, including the two mistakes that matter: reading a `404` as a denial, and reading a failed probe as a pass |
+
+The reason this is a tool and not a paragraph: this document confidently
+described the live rules, and was wrong, for a fortnight. A claim about a
+production security boundary should be re-checkable in one command by whoever
+next doubts it.
+
+## What to do next, in order — revised
+
+1. **Deploy `firestore.rules`, or paste it into the console.** ShadowScan proves
+   this does not need the missing service account. It closes enumeration of 34
+   scans and every submitter email on this product today.
+2. **Do the same for Threat Inspector**, which has no rules at all, and for
+   AttackSim Pro. Neither is this repository's to change — flagged, not touched.
+3. **Delete or re-claim `vpn.ironcityit.com`.** One record, minutes.
+4. **Mint `FIREBASE_SERVICE_ACCOUNT`** — still the thing that unblocks functions
+   and hosting deploys fleet-wide, and the stored-XSS fix with them.
+5. **Auth0 → Firebase custom token** with a `client_id` claim, after which the
+   `get` rule becomes a tenant comparison and the last unauthenticated read path
+   closes.
+
+Items 1–3 need no secret and no deploy pipeline.

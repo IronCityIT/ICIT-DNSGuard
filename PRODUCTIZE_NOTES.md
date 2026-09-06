@@ -360,3 +360,87 @@ one at a time.
 **L. Secrets still missing** (unchanged from Note F): `FIREBASE_SERVICE_ACCOUNT`,
 and the four consensus keys `GROQ_API_KEY`, `OPENROUTER_API_KEY`,
 `GEMINI_API_KEY`, `IRONCITY_API_KEY`. All are on the approved list.
+
+---
+
+# Exposure verification (2026-09-06)
+
+Read-only run against the live projects. Full evidence and the fleet table are in
+`STATUS.md`; this records what it means for the notes above, which are now partly
+wrong.
+
+## Note F is superseded in one important respect
+
+Note F recorded the live Firestore as carrying open test-mode rules — world-
+readable and world-deletable — and concluded that nothing could change until
+`FIREBASE_SERVICE_ACCOUNT` was minted. Probed today:
+
+* A collection this product never writes answers **403**. Test-mode answers 404.
+  **A rules file is deployed.** Note F's premise no longer holds.
+* The scans collection still answers an unauthenticated **list**, returning all
+  34 documents including `email`, `client_name` and `domain`. The committed
+  `firestore.rules` denies exactly this. So the deployed rules are neither
+  test-mode nor the file in this repository — they are something in between that
+  nobody recorded deploying.
+* **Writes were not probed.** Note F called the project world-writable; that was
+  inferred from test-mode, and test-mode is not what is deployed. The claim
+  should be treated as unverified rather than repeated, and it matters, because
+  the stored-XSS chain in note J depends on a write primitive that may or may not
+  still exist.
+
+The remediation order in note F is otherwise unchanged and still correct.
+
+## The "nothing can be done without the service account" reasoning was too strong
+
+`icit-shadowscan` refuses all three probes — no unauthenticated read, no
+enumeration, no unknown collection. Same fleet, same missing secret. Whatever
+closed it did not require `FIREBASE_SERVICE_ACCOUNT`, so the same can be done
+here and on the two projects below without waiting for anything.
+
+## Two other products are exposed, and one is worse than this one
+
+Flagged, not touched — neither repository is this one's to change, and
+AttackSim Pro is live and review-only:
+
+| Project | Rules | Enumeration | Stored docs |
+|---|---|---|---|
+| `iron-city-it-threatinspector` | **none — test-mode** | open | 25 |
+| `ironcity-attacksimpro` | deployed | open | 23 |
+
+Threat Inspector answering 404 on an unknown collection is the signature of a
+project still carrying the rules it was created with. It needs the same one
+console action, and it needs it more than this product does.
+
+## Stale blocker corrected
+
+The four consensus keys are listed throughout these notes as missing. They exist
+on this repository, set 2026-08-25, together with `STORE_SCAN_RESULTS_URL` and
+`DNSGUARD_CLOUD_FUNCTION_URL`. Only `FIREBASE_SERVICE_ACCOUNT` is genuinely
+absent, and no Firebase or gcloud credential exists in this environment either,
+so deploying from here remains impossible — that blocker is real and unchanged.
+
+## Note H (`vpn.ironcityit.com`) confirmed, with the takeover path named
+
+The destination `icit.mynetgear.com` is `NXDOMAIN`, and `mynetgear.com` is served
+by `ns2.no-ip.com` — a self-service dynamic-DNS provider where hostnames are
+claimed by whoever registers them. An unregistered name on such a service is
+claimable, which turns the dangling record into a live takeover of a hostname
+called *vpn* on our own domain. This product's `subdomain_discovery` module found
+it again today and it is the only dangling alias among the 20 hosts that resolve
+under `ironcityit.com`.
+
+No attempt was made to claim the destination. That is an action against a third
+party's service and it needs a person to decide.
+
+## What was added, and why a tool rather than a note
+
+`dnsguard/exposure.py`, `tools/check-exposure.py` and ten tests. One command
+re-checks the live boundary:
+
+    python3 tools/check-exposure.py --project icit-dnsguard
+
+It exits non-zero on a high finding, so once the rules are correct this can gate
+CI and stop the state drifting away from the claim again. The reason it exists
+is that this repository confidently documented a production security boundary,
+and was wrong about it for two weeks, in the direction that made the exposure
+look smaller than it was.
