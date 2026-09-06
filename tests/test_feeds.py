@@ -153,7 +153,9 @@ def fetcher_for(registry, clock, responder):
 
 def test_a_successful_fetch_records_a_checksummed_snapshot(registry, clock):
     registry.register("acme", a_feed())
-    fetcher = fetcher_for(registry, clock, lambda url: FetchResponse(HOSTS_BODY, etag="v1"))
+    fetcher = fetcher_for(
+        registry, clock, lambda url, etag="": FetchResponse(HOSTS_BODY, etag="v1")
+    )
     snapshot, indicators = fetcher.refresh("acme", "icit-malware")
 
     assert snapshot.status == "ok"
@@ -168,7 +170,7 @@ def test_a_successful_fetch_records_a_checksummed_snapshot(registry, clock):
 def test_a_failed_fetch_is_recorded_not_discarded(registry, clock):
     registry.register("acme", a_feed())
 
-    def broken(url):
+    def broken(url, etag=""):
         raise ConnectionError("connection reset")
 
     fetcher = fetcher_for(registry, clock, broken)
@@ -184,7 +186,7 @@ def test_a_failed_fetch_is_recorded_not_discarded(registry, clock):
 def test_a_non_200_response_is_a_failed_snapshot(registry, clock):
     registry.register("acme", a_feed())
     fetcher = fetcher_for(
-        registry, clock, lambda url: FetchResponse("<html>404</html>", status_code=404)
+        registry, clock, lambda url, etag="": FetchResponse("<html>404</html>", status_code=404)
     )
     snapshot, _ = fetcher.refresh("acme", "icit-malware")
     assert snapshot.status == "failed"
@@ -195,7 +197,7 @@ def test_a_transient_failure_is_retried(registry, clock):
     registry.register("acme", a_feed())
     calls = {"n": 0}
 
-    def flaky(url):
+    def flaky(url, etag=""):
         calls["n"] += 1
         if calls["n"] < 3:
             raise TimeoutError("slow")
@@ -210,7 +212,7 @@ def test_one_broken_feed_does_not_stop_the_others(registry, clock):
     registry.register("acme", a_feed(id="good", url="https://feeds.example/good.txt"))
     registry.register("acme", a_feed(id="bad", url="https://feeds.example/bad.txt"))
 
-    def responder(url):
+    def responder(url, etag=""):
         if url.endswith("bad.txt"):
             raise ConnectionError("down")
         return FetchResponse(HOSTS_BODY)
@@ -225,7 +227,7 @@ def test_disabled_feeds_are_not_fetched(registry, clock):
     registry.set_enabled("acme", "icit-malware", False, reason="publisher licence lapsed")
     seen = []
     fetcher = fetcher_for(
-        registry, clock, lambda url: seen.append(url) or FetchResponse(HOSTS_BODY)
+        registry, clock, lambda url, etag="": seen.append(url) or FetchResponse(HOSTS_BODY)
     )
     result = fetcher.refresh_all("acme")
     assert seen == []
@@ -243,7 +245,7 @@ def test_a_feed_with_no_successful_snapshot_is_stale(registry):
 
 def test_a_snapshot_goes_stale_after_its_declared_window(registry, clock):
     feed = registry.register("acme", a_feed(stale_after_seconds=86400))
-    fetcher = fetcher_for(registry, clock, lambda url: FetchResponse(HOSTS_BODY))
+    fetcher = fetcher_for(registry, clock, lambda url, etag="": FetchResponse(HOSTS_BODY))
     snapshot, _ = fetcher.refresh("acme", "icit-malware")
 
     assert registry.is_stale(feed, snapshot) is False
@@ -255,7 +257,7 @@ def test_health_reports_freshness_and_failure_counts(registry, clock):
     registry.register("acme", a_feed(stale_after_seconds=3600))
     calls = {"n": 0}
 
-    def responder(url):
+    def responder(url, etag=""):
         calls["n"] += 1
         if calls["n"] > 1:
             raise ConnectionError("down")
@@ -278,7 +280,7 @@ def test_health_reports_freshness_and_failure_counts(registry, clock):
 
 def indexed(registry, clock, body=HOSTS_BODY, **feed_kwargs):
     registry.register("acme", a_feed(**feed_kwargs))
-    fetcher = fetcher_for(registry, clock, lambda url: FetchResponse(body))
+    fetcher = fetcher_for(registry, clock, lambda url, etag="": FetchResponse(body))
     _, indicators = fetcher.refresh("acme", feed_kwargs.get("id", "icit-malware"))
     return IndicatorIndex(indicators, registry=registry, tenant_id="acme")
 
@@ -344,7 +346,7 @@ def test_the_same_name_on_two_feeds_produces_two_citations(registry, clock):
             trust_tier="community",
         ),
     )
-    fetcher = fetcher_for(registry, clock, lambda url: FetchResponse(HOSTS_BODY))
+    fetcher = fetcher_for(registry, clock, lambda url, etag="": FetchResponse(HOSTS_BODY))
     indicators = fetcher.refresh_all("acme")["indicators"]
     index = IndicatorIndex(indicators, registry=registry, tenant_id="acme")
 

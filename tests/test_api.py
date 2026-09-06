@@ -465,3 +465,96 @@ def test_cors_is_closed_by_default(services):
     cors = [m for m in app.user_middleware if "CORS" in str(m)]
     assert cors, "CORS middleware should be installed"
     assert cors[0].kwargs["allow_origins"] == []
+
+
+# ── feed-driven decisions and maintenance ────────────────────────────────────
+
+
+def register_feed_with_entries(services, clock):
+    """A tenant whose feed has actually been fetched and persisted."""
+    from dnsguard.feeds import FeedFetcher, FeedSource, FetchResponse
+    from dnsguard.resilience import BreakerRegistry, RetryPolicy
+
+    services.feeds.register(
+        "acme",
+        FeedSource(
+            id="icit-malware",
+            name="Curated list",
+            publisher="Iron City IT",
+            url="https://feeds.example/m.txt",
+            category="malware",
+            trust_tier="vetted",
+            fmt="hosts",
+        ),
+    )
+    FeedFetcher(
+        registry=services.feeds,
+        fetch=lambda url, etag="": FetchResponse("0.0.0.0 listed.example\n"),
+        clock=clock,
+        breakers=BreakerRegistry(clock=clock),
+        policy=RetryPolicy(attempts=1, jitter=False),
+    ).refresh("acme", "icit-malware")
+
+
+def test_a_category_rule_resolves_against_persisted_feed_entries(services, clock, approver):
+    """The decision endpoint used to pass no indicator index at all, so a
+    category rule matched nothing and a listed domain came back as a clean
+    allow."""
+    client = client_for(services)
+    register_feed_with_entries(services, clock)
+    bootstrap(client)
+    version = draft_and_submit(
+        client,
+        rules=[
+            {
+                "action": "block",
+                "match_kind": "category",
+                "match_value": "malware",
+                "justification": "tenant blocks malware categorically",
+            }
+        ],
+    )
+    request_id = client.post(
+        f"/api/v1/tenants/acme/policies/default/versions/{version}/publish"
+    ).json()["approval_request_id"]
+    approve(client, approver, request_id)
+    client.post(
+        f"/api/v1/tenants/acme/policies/default/versions/{version}/publish",
+        params={"approval_id": request_id},
+    ).raise_for_status()
+    bind = client.put("/api/v1/tenants/acme/policy", json={"policy_id": "default"})
+    approve(client, approver, bind.json()["approval_request_id"])
+    client.put(
+        "/api/v1/tenants/acme/policy",
+        json={"policy_id": "default"},
+        params={"approval_id": bind.json()["approval_request_id"]},
+    ).raise_for_status()
+
+    decision = client.get(
+        "/api/v1/tenants/acme/sites/hq/decide", params={"name": "listed.example"}
+    ).json()
+
+    assert decision["degraded_from"] == "block"  # monitor mode, but it matched
+    assert decision["provenance"], "the decision must cite the feed that drove it"
+    assert decision["provenance"][0]["feed_id"] == "icit-malware"
+    assert decision["provenance"][0]["line_no"] == 1
+
+
+def test_maintenance_runs_over_http_and_reports_what_it_did(client):
+    bootstrap(client)
+    report = client.post("/api/v1/tenants/acme/maintenance").json()
+    assert report["ok"] is True
+    assert report["audit_chain"]["valid"] is True
+    assert report["feeds"]["attempted"] is False  # no fetcher configured in tests
+
+
+def test_maintenance_needs_the_operator_role(services):
+    bootstrap(client_for(services))
+    viewer = client_for(services, roles=["viewer"])
+    assert viewer.post("/api/v1/tenants/acme/maintenance").status_code == 403
+
+
+def test_maintenance_cannot_be_run_against_another_tenant(services):
+    bootstrap(client_for(services))
+    intruder = client_for(services, actor="mallory", tenant="globex")
+    assert intruder.post("/api/v1/tenants/acme/maintenance").status_code == 403
