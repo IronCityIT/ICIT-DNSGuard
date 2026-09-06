@@ -135,9 +135,18 @@ class SubdomainDiscovery(ScanModule):
         res = make_resolver(ctx.get("nameservers"))
         session = ctx.get("http") or _default_session()
 
-        candidates = {f"{name}.{host}" for name in PROBE_NAMES}
-        if ctx.get("use_certificate_transparency", True):
-            candidates |= _crtsh_names(session, host)
+        # Cached on ctx so that alias_takeover, which needs the same candidate
+        # set, does not repeat the certificate-transparency call and the probe
+        # sweep when both modules run in the same scan. Whichever runs first
+        # pays for it.
+        cached = ctx.get("alias_candidates")
+        if isinstance(cached, dict) and cached.get("root") == host:
+            candidates = set(cached["names"])
+        else:
+            candidates = {f"{name}.{host}" for name in PROBE_NAMES}
+            if ctx.get("use_certificate_transparency", True):
+                candidates |= _crtsh_names(session, host)
+            ctx["alias_candidates"] = {"root": host, "names": sorted(candidates)}
 
         def resolve(fqdn: str) -> dict[str, Any] | None:
             addresses = query(res, fqdn, "A")

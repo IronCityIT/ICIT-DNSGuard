@@ -363,3 +363,104 @@ def test_every_advertised_group_resolves(group):
     proc = run_scan("--domain", "example.com", "--group", group, "--dry-run")
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["modules_run"]
+
+
+# ── the report contract carries what the Finding contract promises ───────────
+
+
+def test_the_remediation_field_reaches_the_client_row():
+    """base.py's contract says every non-informational finding states its fix
+    "in the finding itself". The report read only evidence["remediation"], so a
+    module using the documented field rendered a blank remediation to the
+    client — a finding with no fix, which base.py calls a complaint."""
+    f = Finding(
+        module="alias_takeover",
+        target="example.com",
+        severity="critical",
+        title="An alias points at a name somebody else can claim",
+        detail="d",
+        remediation="Delete the alias record for vpn.example.com.",
+    )
+    row = build([f], "example.com")["findings"][0]
+    assert row["remediation"] == "Delete the alias record for vpn.example.com."
+
+
+def test_the_field_wins_over_the_legacy_evidence_key():
+    f = Finding(
+        module="spf_audit",
+        target="example.com",
+        severity="high",
+        title="t",
+        remediation="the field",
+        evidence={"remediation": "the legacy key"},
+    )
+    row = build([f], "example.com")["findings"][0]
+    assert row["remediation"] == "the field"
+    assert "remediation" not in row["evidence"]
+
+
+def test_confidence_survives_into_the_report():
+    """An inconclusive check rendering identically to a proven one is the single
+    most misleading thing a security report can do."""
+    f = Finding(
+        module="alias_takeover",
+        target="example.com",
+        severity="info",
+        title="An alias destination could not be checked",
+        confidence="inconclusive",
+    )
+    row = build([f], "example.com")["findings"][0]
+    assert row["confidence"] == "inconclusive"
+
+
+def test_a_finding_without_a_confidence_defaults_to_confirmed():
+    row = build([finding("spf_audit", "high", "Missing SPF")], "example.com")["findings"][0]
+    assert row["confidence"] == "confirmed"
+
+
+def test_the_specific_asset_reaches_the_row():
+    """Three takeovers on three hosts all reading as the scan target is not a
+    report anybody can act from."""
+    f = Finding(
+        module="alias_takeover",
+        target="example.com",
+        asset="vpn.example.com",
+        severity="critical",
+        title="t",
+    )
+    row = build([f], "example.com")["findings"][0]
+    assert row["asset"] == "vpn.example.com"
+    assert row["target"] == "example.com"
+
+
+def test_the_asset_falls_back_to_the_target():
+    row = build([finding("spf_audit", "high", "Missing SPF")], "example.com")["findings"][0]
+    assert row["asset"] == "example.com"
+
+
+def test_the_row_carries_a_fingerprint_for_change_detection():
+    rows = [
+        build([finding("spf_audit", "high", "Missing SPF")], "example.com")["findings"][0]
+        for _ in range(2)
+    ]
+    assert rows[0]["fingerprint"]
+    assert rows[0]["fingerprint"] == rows[1]["fingerprint"]
+
+
+def test_every_registered_module_declares_a_client_facing_category():
+    """CATEGORY says a new module "has to declare where it belongs rather than
+    defaulting into General". Nothing enforced that, and modules had already
+    fallen through — so the client saw "General" for entire capabilities."""
+    import sys
+    from pathlib import Path
+
+    framework = Path(__file__).resolve().parent.parent / "module_framework"
+    for path in (framework, framework / "modules"):
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+    import registry
+
+    from dnsguard.report import CATEGORY
+
+    undeclared = sorted(set(registry.discover()) - set(CATEGORY))
+    assert not undeclared, f"modules with no client-facing category: {undeclared}"

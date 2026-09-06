@@ -353,3 +353,91 @@ shell on the host — operator role, tenant-scoped like every other route.
 exists in this environment, so nothing can be deployed from here. The live
 Firestore enumeration recorded in the previous run is still open and still needs
 the console action described there — this run did not and could not change it.
+
+---
+
+# Takeover verification run — 2026-09-06
+
+**Branch:** `productize/dnsguard-takeover-verification` · **Base:** `main` (at
+`18b4c83`, PR #8 merged).
+
+The previous runs found `vpn.ironcityit.com` dangling and then worked out *by
+hand* why it mattered — the destination is NXDOMAIN, its parent is served by a
+self-service dynamic-DNS provider, so the name is claimable and the hostname is
+one staff are taught to trust. The product could not reach that conclusion
+itself. Its dangling-alias finding said "**if** the destination is a
+de-provisioned hosting account…", and that "if" was the entire finding.
+
+This run makes the product do the analysis.
+
+## DEFECTS found and fixed
+
+| # | Severity | Defect | Status |
+|---|---|---|---|
+| D15 | **High** | Dangling aliases were reported without any check of whether the destination was claimable. A CNAME typo and a live takeover produced the same finding at the same severity, so the real one could not be picked out | **Fixed** — `alias_takeover` names the mechanism and who could claim it |
+| D16 | **High** | `_dns.query` collapsed NXDOMAIN, NODATA and a timeout to an empty list. Every takeover conclusion depends on telling those apart, and nothing could | **Fixed** — `resolution()` reports which |
+| D17 | **High** | Found by running the module against a live domain, not by review: **a resolver that answers NODATA for names that do not exist turns every real takeover into "a broken record, not a risk"** — a false negative on the most serious finding the product makes. The resolver in this sandbox does exactly that | **Fixed** — a control probe verifies the resolver before any verdict is trusted |
+| D18 | **Medium** | The report ignored `Finding.remediation` and read only `evidence["remediation"]`. `base.py`'s own contract says the fix travels in the finding — so any module using the documented field rendered a **blank remediation** to the client. `base.py` calls a finding without a fix "a complaint" | **Fixed** — field first, legacy key as fallback |
+| D19 | **Medium** | `confidence` and `asset` never reached the report. An inconclusive check rendered identically to a proven one, and every finding showed the scan target rather than the affected host | **Fixed** — both carried, plus the fingerprint |
+| D20 | **Low** | `CATEGORY` says a new module "has to declare where it belongs rather than defaulting into General". Nothing enforced it and two modules had already fallen through, so whole capabilities showed as "General" | **Fixed** — and a test now fails when a registered module has no category |
+
+## The control probe, and why it is the most important part
+
+Every verdict rests on distinguishing "this name does not exist" from "this name
+exists without an address". Resolvers in the wild do not report that faithfully —
+filtering resolvers, captive portals and the Docker resolver in this sandbox all
+rewrite negative answers, and a zone that wildcards never produces NXDOMAIN for
+anything.
+
+So before drawing any conclusion about a destination, the module looks up a
+random name under the same parent. That name cannot exist, so a resolver worth
+believing must call it NXDOMAIN. When it does not, the verdict is `unresolved`
+and says why, instead of quietly reporting the safe answer.
+
+This is not hypothetical. The first live run of this module produced exactly the
+inconclusive verdict, because the sandbox resolver returned SERVFAIL for the
+destination and NODATA for names that do not exist. Without the control, the
+same run would have reported the live takeover on our own domain as a low
+severity broken record.
+
+## PROVEN — verified this run
+
+| Area | What was verified | Result |
+|---|---|---|
+| **Gates** | All eleven `tools/gates.sh` gates | ✅ green |
+| **Tests** | 30 new takeover tests, 8 new report-contract tests, whole suite green | ✅ |
+| **Live run, conformant resolver** | `tools/scan.py --domain ironcityit.com --modules alias_takeover --nameservers 1.1.1.1,8.8.8.8` | ✅ **critical**, `claimable_service` |
+| **Live run, broken resolver** | Same scan on the sandbox resolver | ✅ **inconclusive**, not a false clean |
+| **Mechanism named** | `vpn.ironcityit.com → icit.mynetgear.com`, apex `mynetgear.com`, dynamic DNS, open signup, trusted label | ✅ matches the hand analysis exactly |
+| **No third-party action** | Nothing claimed, registered or reserved. Read-only lookups; contact class `dns`, so no packet reaches the scanned host | ✅ asserted by test |
+
+The live finding, verbatim from the report:
+
+> **CRITICAL** — An alias points at a name somebody else can claim.
+> `vpn.ironcityit.com` is an alias for `icit.mynetgear.com`, which does not
+> exist. Its parent `mynetgear.com` is a dynamic DNS service, where names under
+> it are handed out to whoever asks for them first. Claiming this one takes an
+> account and a few minutes. `vpn.ironcityit.com` is a name staff and clients are
+> taught to trust, so content served there would be believed, and a certificate
+> for it would validate.
+
+## Stated limits
+
+The claimable-zone list is a floor, not a ceiling. A destination under an
+unlisted zone still produces a dangling finding — at `possible` confidence,
+because the claim mechanism has not been established, not because it is safe.
+Confirming a takeover by performing one would mean claiming a name on a third
+party's service, which is an action against somebody else's system and needs a
+person; the module never does it, and the confidence field says where proof
+stops.
+
+## Still open, unchanged by this run
+
+`FIREBASE_SERVICE_ACCOUNT` remains absent — independently re-checked this run: no
+`gcloud` or `firebase` CLI, no application-default credentials, and the secret is
+not on the repository. Nothing was deployed. The live Firestore enumeration
+recorded earlier is still open.
+
+**`vpn.ironcityit.com` is still live and still claimable.** The product can now
+find it on its own, which does not fix it. One DNS change: delete the record, or
+re-claim the destination.
