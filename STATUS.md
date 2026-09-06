@@ -275,3 +275,81 @@ next doubts it.
    closes.
 
 Items 1–3 need no secret and no deploy pipeline.
+
+---
+
+# Feed runtime run — 2026-09-06
+
+**Branch:** `productize/dnsguard-feed-runtime` · **Base:** `main` (at `c843b9c`,
+which is PR #7 merged — the exposure verification and its CI ratchet are now on
+`main`).
+
+This run closed the gap between a feeds subsystem that passes its tests and one
+that can actually run. Two defects behind it were the kind that fail quietly in
+the direction of *less* protection, which is the direction that does not get
+noticed.
+
+## DEFECTS found and fixed
+
+| # | Severity | Defect | Status |
+|---|---|---|---|
+| D11 | **High** | Indicators were never persisted. `FeedFetcher.refresh` returned a list and stored nothing, so a control plane that restarted decided against an empty index — and an empty index is indistinguishable from a clean lookup. A name on three blocklists resolved as **allowed**, silently, until the next refresh window | **Fixed** — entries persisted per feed with full provenance; `load_index` rebuilds a tenant's index from disk |
+| D12 | **High** | `GET /decide` — the "explain this block" endpoint — passed no indicator index at all, so category and feed rules matched nothing. It reported a clean allow for a name on a live blocklist, which is exactly the answer an operator would repeat to a client | **Fixed** — loads the tenant's persisted index |
+| D13 | **Medium** | Nothing in the repository could fetch a feed. The transport is an injection, which is what makes it testable, and no implementation of it existed. Every test supplied a lambda; in production the parameter had nothing to bind to | **Fixed** — `dnsguard/fetcher.py` |
+| D14 | **Medium** | No periodic loop. Feeds aged into staleness, lapsed exceptions were never written down, and alert rules were never evaluated — all silently, with no event marking the decay | **Fixed** — `dnsguard/maintenance.py`, a CLI and an HTTP route |
+
+## PROVEN — verified this run
+
+| Area | What was verified | Result |
+|---|---|---|
+| **Gates** | All eleven `tools/gates.sh` gates | ✅ green |
+| **Tests** | 462 tests, 89% line coverage. Still no test touches the network | ✅ 462/462 |
+| **Live feed fetch** | `tools/maintain.py --tenant acme --fetch` against a real publisher over https, through the SSRF guard | ✅ 376 indicators persisted |
+| **Conditional refresh** | Second pass on the same feed: publisher answered `304`, snapshot recorded `unchanged`, all 376 entries kept, `degraded` empty, freshness clock restarted | ✅ |
+| **Persistence** | Fresh process, `load_index` off disk: 376 indicators back with feed id, snapshot id, sha256, line number, category and trust tier intact. A known entry hits; a clean name does not | ✅ |
+| **SSRF guard** | Checked directly over **https**, so the scheme rule is not doing the work alone: `169.254.169.254` (cloud metadata), `127.0.0.1`, `10.0.0.5`, `[::1]` and `localhost` all refused. Metadata still refused with `allow_insecure=True` | ✅ |
+| **Approval gate** | A maintenance pass consumes no approval — asserted by test. The gate is only worth having if nothing routes around it, background jobs included | ✅ |
+| **Audit chain** | Valid after every live pass; a broken chain is the loudest thing the runner reports | ✅ |
+
+## Two failure modes deliberately covered by tests
+
+Both fail quietly toward less protection, which is why they are asserted rather
+than reasoned about:
+
+* **A 304 read as an empty feed.** The body of a 304 is empty by definition.
+  Parsing it as the feed's contents would drop every block the feed supported,
+  and the pass would report success.
+* **A 304 read as degradation.** Counting a correctly-cached feed as failed makes
+  a healthy feed look broken, and `latest_snapshot` excluding `unchanged` would
+  let a stable feed age into staleness and lose the right to justify a block.
+
+## Stated residual, not hidden
+
+The fetch guard resolves the host and then connects, which are two steps. A name
+that resolves differently between them (DNS rebinding) is not defeated by this;
+closing it needs connection-level pinning that `requests` does not expose. The
+guard stops the careless and the opportunistic and is not a substitute for egress
+filtering on the runner. This is in the module docstring as well as here.
+
+## How to run the loop
+
+```sh
+python3 tools/maintain.py --data-dir ./data --all --dry-run   # what a pass would touch
+python3 tools/maintain.py --data-dir ./data --tenant acme     # pass, no network
+python3 tools/maintain.py --data-dir ./data --tenant acme --fetch
+```
+
+Fetching is off unless `--fetch` is given: feed URLs are operator-supplied, and a
+pass that quietly reached out to every one of them the first time somebody ran it
+would be a surprise. Exit 1 only when a tenant reported a problem, so cron mail
+arrives when something is wrong and not otherwise.
+
+`POST /api/v1/tenants/{id}/maintenance` is the same pass for a scheduler with no
+shell on the host — operator role, tenant-scoped like every other route.
+
+## Unchanged blockers
+
+`FIREBASE_SERVICE_ACCOUNT` is still absent and no Firebase or gcloud credential
+exists in this environment, so nothing can be deployed from here. The live
+Firestore enumeration recorded in the previous run is still open and still needs
+the console action described there — this run did not and could not change it.

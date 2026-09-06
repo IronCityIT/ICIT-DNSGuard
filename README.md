@@ -147,6 +147,27 @@ DNSGUARD_API_TOKEN=dev-token DNSGUARD_DATA_DIR=./data \
   python3 -c "import uvicorn; from dnsguard.api import create_app; uvicorn.run(create_app())"
 ```
 
+### The maintenance pass
+Feeds go stale, exceptions lapse and alert rules only fire when something
+evaluates them. This is the loop that keeps all three true, meant for cron,
+Cloud Scheduler or a Jenkins timer.
+
+```bash
+python3 tools/maintain.py --data-dir ./data --all --dry-run    # what a pass would touch
+python3 tools/maintain.py --data-dir ./data --tenant acme      # a pass, no network
+python3 tools/maintain.py --data-dir ./data --tenant acme --fetch
+```
+
+Fetching is **off** unless `--fetch` is given: feed URLs are operator-supplied, so
+reaching out to every one of them should be opted into knowingly. Exit 1 only
+when a tenant actually reported a problem, so cron mail means something is wrong.
+
+The pass is non-disruptive by construction — it refreshes data, records expiries
+the tenant already agreed to, and raises alerts. Nothing it does changes what
+resolves, so nothing it does needs an approval, and a test asserts it consumes
+none. `POST /api/v1/tenants/{id}/maintenance` is the same pass for a scheduler
+with no shell on the host.
+
 ### Quality gates
 ```bash
 pip install -r requirements-dev.txt
@@ -170,9 +191,14 @@ ICIT-DNSGuard/
 │   ├── approvals.py audit.py evidence.py compliance.py fleetfix.py
 │   ├── analytics.py alerts.py enforcement.py resilience.py
 │   ├── store.py clock.py errors.py report.py
+│   ├── fetcher.py            # guarded HTTP transport for feeds
+│   ├── maintenance.py        # the periodic pass
+│   ├── exposure.py           # live Firestore exposure probe
 │   └── api.py                # the HTTP surface
 ├── tools/
 │   ├── scan.py               # scan entry point
+│   ├── maintain.py           # the maintenance pass, for cron
+│   ├── check-exposure.py     # re-check the live exposure boundary
 │   └── gates.sh              # every quality gate, one script
 ├── dashboard/public/
 │   ├── index.html            # public free-scan page
