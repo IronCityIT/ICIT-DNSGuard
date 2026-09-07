@@ -195,11 +195,13 @@ ICIT-DNSGuard/
 │   ├── fetcher.py            # guarded HTTP transport for feeds
 │   ├── maintenance.py        # the periodic pass
 │   ├── exposure.py           # live Firestore exposure probe
+│   ├── dns_exposure.py       # the alias baseline comparison
 │   └── api.py                # the HTTP surface
 ├── tools/
 │   ├── scan.py               # scan entry point
 │   ├── maintain.py           # the maintenance pass, for cron
-│   ├── check-exposure.py     # re-check the live exposure boundary
+│   ├── check-exposure.py     # re-check the live Firestore exposure boundary
+│   ├── check-dns-exposure.py # re-check our own aliases against dns-baseline.json
 │   └── gates.sh              # every quality gate, one script
 ├── dashboard/public/
 │   ├── index.html            # public free-scan page
