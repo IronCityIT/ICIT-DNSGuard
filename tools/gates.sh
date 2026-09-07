@@ -124,25 +124,68 @@ gate_node() {
 gate_secrets() {
     say "secret hygiene"
     hits=0
+    # Provider token shapes. This list grew by one the hard way: a live-format
+    # HubSpot private-app token sat in deploy.sh from January to September and
+    # this gate reported "no committed credentials found" every single run,
+    # because it only knew about AWS, PEM, GitHub and Slack. Add the shape when
+    # a provider is adopted, not after the token leaks.
     patterns='
 AKIA[0-9A-Z]{16}
 -----BEGIN [A-Z ]*PRIVATE KEY-----
 gh[pousr]_[A-Za-z0-9]{36}
 xox[baprs]-[A-Za-z0-9-]{10,}
+pat-(na|eu)[0-9]*-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+sk-[A-Za-z0-9]{32,}
+AIza[0-9A-Za-z_-]{35}
+glpat-[0-9A-Za-z_-]{20}
+'
+    # IFS is pinned to newline for this loop. Unquoted $patterns word-splits on
+    # IFS, and the PEM pattern contains spaces — so it was never run as written.
+    # It became four fragments, of which "-----BEGIN" matched any line
+    # mentioning a PEM header (including a public certificate) and "[A-Z" is an
+    # invalid bracket expression. That matters more than it looks: `if grep`
+    # reads grep's error exit the same as "no match", so a malformed pattern
+    # contributed nothing and said nothing. Hence the compile check below — a
+    # gate that silently skips a rule is worse than one that never had it.
+    old_ifs=$IFS
+    IFS='
 '
     for pattern in $patterns; do
+        IFS=$old_ifs
         [ -n "$pattern" ] || continue
+        # -e, always. A pattern starting with "-" is otherwise parsed as an
+        # option: the PEM rule had been dying with "grep: unrecognized option"
+        # since the day it was written, and `if grep` reads that exit the same
+        # as "no match", so a committed private key would have passed this gate.
+        printf '' | grep -qE -e "$pattern" 2>/dev/null || [ $? -eq 1 ] || \
+            fail "secret pattern does not compile, so it was never applied: $pattern"
+        IFS='
+'
+        # `apiKey:` is excluded, and only that. A Firebase *Web* API key is a
+        # public client identifier: it ships to every browser that loads the
+        # page, and it authorises nothing on its own - access is decided by the
+        # security rules behind it. Treating it as a leaked secret would make
+        # this gate cry wolf on a value that is public by design, and a gate
+        # that cries wolf is one people learn to click past. Any other AIza
+        # key - a server key, a Maps key - still fails here.
         if grep -rIEn --exclude-dir=.git --exclude-dir=gate-reports \
-                --exclude-dir=node_modules --exclude=gates.sh "$pattern" . 2>/dev/null; then
+                --exclude-dir=node_modules --exclude=gates.sh -e "$pattern" . 2>/dev/null \
+                | grep -vE '^\S+:[0-9]+:[[:space:]]*apiKey:'; then
             hits=$((hits + 1))
         fi
     done
+    IFS=$old_ifs
     [ "$hits" -eq 0 ] || fail "possible committed credential - review the matches above"
 
-    # Secrets must be referenced by name, never assigned a literal in a workflow.
-    if grep -rIEn '(API_KEY|TOKEN|SERVICE_ACCOUNT|PASSWORD)[[:space:]]*[:=][[:space:]]*["'"'"'][A-Za-z0-9/_+-]{16,}' \
-            .github/workflows/ 2>/dev/null; then
-        fail "a workflow appears to assign a secret literal"
+    # Secrets must be referenced by name, never assigned a literal. This used to
+    # look only inside .github/workflows/, which is why a literal in a shell
+    # script at repo root was invisible to it. The whole tree is searched now.
+    # ${NAME:-literal} counts: a default value is still a value in the file.
+    if grep -rIEn --exclude-dir=.git --exclude-dir=gate-reports \
+            --exclude-dir=node_modules --exclude=gates.sh \
+            '(API_KEY|APIKEY|TOKEN|SECRET|SERVICE_ACCOUNT|PASSWORD|PASSWD|CREDENTIAL)[A-Z_]*[[:space:]]*[:=][[:space:]]*[\"'"'"']?[A-Za-z0-9/_+.-]{16,}' \
+            . 2>/dev/null | grep -vE 'DNSGUARD_API_TOKEN|ci-build-token-not-a-real-secret|YOUR_|_HERE|example|placeholder|\$\{?[A-Za-z_]|secrets\.|env\.'; then
+        fail "something assigns a secret literal - reference it by name instead"
     fi
     printf 'no committed credentials found\n'
 }
