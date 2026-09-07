@@ -59,7 +59,7 @@ currently serving real users. **VERIFIED**.
 | Scanner entry point | `tools/scan.py` | **VERIFIED** — run live against `ironcityit.com` |
 | Maintenance loop | `tools/maintain.py`, `dnsguard/maintenance.py` | **VERIFIED** — live feed fetch, 304 handling, audit verify |
 | Exposure ratchets | `tools/check-exposure.py`, `tools/check-dns-exposure.py` | **VERIFIED** — both run in CI on every PR |
-| Quality gates | `tools/gates.sh` (11 gates), `.github/workflows/ci.yml`, `Jenkinsfile` | **VERIFIED** green |
+| Quality gates | `tools/gates.sh` (12 gates), `.github/workflows/ci.yml`, `Jenkinsfile` | **VERIFIED** green |
 | Free-scan funnel | `cloud-function/`, `dashboard/public/index.html`, `.github/workflows/dns-analysis.yml` | **VERIFIED** live in production |
 | Operator console | `dashboard/public/console.{html,css,js}` | **VERIFIED** as files; **UNKNOWN** whether ever deployed — it has no live API to talk to |
 
@@ -480,9 +480,15 @@ API token. Names to be agreed with whoever provisions them; not invented here.
   `main` and **unpublished**. The live site serves the last hand-deployed build.
 - `Jenkinsfile` deploys nothing by design; it runs the same `tools/gates.sh`.
 - A `Dockerfile` exists for the control plane (non-root uid 10001, `/data`
-  volume, refuses to start without `DNSGUARD_API_TOKEN`). **UNKNOWN** whether it
-  has ever been built — no Docker in this environment, and the build gate SKIPs
-  loudly rather than passing.
+  volume, refuses to start without credentials). **VERIFIED built** — the build
+  gate runs `docker build` on every CI run; earlier notes recording this as
+  UNKNOWN were wrong, and were corrected by reading a CI log rather than
+  re-asserting them.
+- **VERIFIED that it runs**, as of the container smoke gate: the image starts,
+  answers `/healthz` and `/readyz`, runs as a non-root uid, and **refuses to
+  start when no credentials are configured**. That last one is the property that
+  keeps a deployment from quietly serving tenant data to anyone who finds the
+  port, and it is now checked against the real image rather than the source.
 
 **TARGET:** control-plane API and ingest API run as containers on NAS-backed
 infrastructure; the dashboard is served as static files from the same
@@ -570,20 +576,21 @@ secrets. None are guessed here.
 | — | High | `iron-city-it-threatinspector` carries original test-mode rules; `ironcity-attacksimpro` permits enumeration | Flagged, **not this repo's to change** |
 | — | Med | Nothing can be deployed: no `gcloud`/`firebase`/ADC, `FIREBASE_SERVICE_ACCOUNT` absent | Open, environmental |
 | — | Med | Certificate transparency does not answer from GitHub runners, so the DNS ratchet sweeps 56 conventional names only | Reported by the gate; fatal only with `--require-certificate-transparency` |
-| — | Low | Docker image never built — no Docker available; gate SKIPs loudly | Open, environmental |
+| — | Low | Docker image never *run* — built in CI but never started | **Fixed** — `tools/container-smoke.sh` starts it in CI and checks health, readiness, non-root, and refusal to start unauthenticated |
 | — | Low | Three stale duplicate dashboard files | **Fixed** — removed, after verifying none is served |
 
 ---
 
 ## 13. Tests and gates
 
-`sh tools/gates.sh all` — eleven gates, one definition of green, three callers
+`sh tools/gates.sh all` — twelve gates, one definition of green, three callers
 (local, `ci.yml`, `Jenkinsfile`):
 
 lint (ruff) · format (ruff) · typecheck (mypy) · test (pytest+coverage) ·
 JSON contract · workflow YAML (PyYAML + actionlint + shellcheck) ·
 cloud function (`node --check`) · dashboard (`node --check` on extracted inline
-JS) · secret hygiene · shellcheck on the gate script itself · build.
+JS) · secret hygiene · shellcheck on every `tools/*.sh` · build ·
+container smoke test.
 
 Plus the CI-only `exposure` job (§5.4). **VERIFIED green**, 532 tests.
 

@@ -25,7 +25,10 @@ jobs:
     env:
       # The control plane refuses to start unauthenticated. A build-scoped dummy,
       # never a real secret — the API tests build their own app explicitly.
+      # A token now has to name a tenant, because taking one from a request
+      # header is what let a single credential act as any client.
       DNSGUARD_API_TOKEN: ci-build-token-not-a-real-secret
+      DNSGUARD_API_TENANT: ci
     steps:
       - uses: actions/checkout@v4
 
@@ -82,10 +85,15 @@ jobs:
         run: sh tools/gates.sh dashboard
       - name: Secret hygiene
         run: sh tools/gates.sh secrets
-      - name: Gate script
+      - name: Shell scripts
         run: sh tools/gates.sh shell
       - name: Build
         run: sh tools/gates.sh build
+      - name: Container smoke test
+        # The runner has docker, so this actually executes here — locally it
+        # SKIPs. It is the only place the image we intend to deploy is ever
+        # started rather than merely built.
+        run: sh tools/gates.sh container
 
       - name: Upload gate reports
         if: always()
