@@ -98,25 +98,35 @@ This ensures users only see their own scan data - critical for free marketing ca
 
 ## 🚀 Deployment
 
-### 1. Push to GitHub
-```bash
-git init
-git add -A
-git commit -m "DNS Guard v4.0 - SMB Email Security"
-git remote add origin https://github.com/IronCityIT/ICIT-DNSGuard.git
-git push -u origin main --force
-```
+**Read [`docs/DEVELOPER-HANDOFF.md`](docs/DEVELOPER-HANDOFF.md) before deploying
+anything.** It is the source of truth for what is real, what is planned and what
+is unknown, and every claim in it is labelled.
 
-### 2. Add GitHub Secrets
-- `GROQ_API_KEY` - For AI Consensus Engine
-- `OPENROUTER_API_KEY` - For AI Consensus Engine
-- `GEMINI_API_KEY` - For AI Consensus Engine
-- `DNSGUARD_CLOUD_FUNCTION_URL` - Cloud Function endpoint
+### Target platform
 
-### 3. Deploy Dashboard
-```bash
-firebase deploy --only hosting --project icit-dnsguard
-```
+Firebase, Firestore, Firebase Hosting and GCP-managed product storage are
+**retired** from the ICIT target architecture. Do not build on them and do not
+extend them. Persistent state belongs on ICIT NAS-backed infrastructure —
+MariaDB for relational state, NAS volumes for artifacts — with GitHub Actions as
+the execution and orchestration layer. The migration is phased in
+`docs/DEVELOPER-HANDOFF.md` §11; nothing is switched over until its replacement
+is proven.
+
+### What is deployable today
+
+Honestly: **nothing, from this repository.** `FIREBASE_SERVICE_ACCOUNT` does not
+exist, `firebase-deploy.yml` has failed on every push to `main`, and the live
+site serves the last hand-deployed build. The previous `deploy.sh` — a manual
+Cloud Shell script for the retired platform — has been removed; it also carried a
+hardcoded API token (see the handoff document, D24: **the token still needs
+rotating**).
+
+### Secrets — by name only
+
+`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `IRONCITY_API_KEY`,
+`VIRUSTOTAL_API_KEY`, `ABUSEIPDB_API_KEY`, `STORE_SCAN_RESULTS_URL`,
+`DNSGUARD_CLOUD_FUNCTION_URL`. Never write a value into a file — `tools/gates.sh
+secrets` will fail the build, and `tests/test_gates.py` proves it still can.
 
 ## 📊 Running a Scan
 
@@ -197,6 +207,9 @@ ICIT-DNSGuard/
 │   ├── exposure.py           # live Firestore exposure probe
 │   ├── dns_exposure.py       # the alias baseline comparison
 │   └── api.py                # the HTTP surface
+├── docs/
+│   ├── DEVELOPER-HANDOFF.md  # start here: architecture, evidence, backlog
+│   └── UI-WIRING.md
 ├── tools/
 │   ├── scan.py               # scan entry point
 │   ├── maintain.py           # the maintenance pass, for cron
