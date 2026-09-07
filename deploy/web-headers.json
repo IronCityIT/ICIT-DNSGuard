@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "The web security policy for whatever serves the dashboard, expressed independently of any",
+    "particular host. It exists because this policy was built carefully - HSTS, a strict CSP with no",
+    "unsafe-inline on the console, frame-ancestors none, an exact connect-src list - and all of it",
+    "currently lives inside firebase.json. Firebase Hosting is retired from the target architecture,",
+    "so without this file the hardening would be deleted along with the platform and quietly",
+    "rediscovered later, one incident at a time.",
+    "",
+    "This is the source of truth. firebase.json still carries the same policy while Firebase Hosting",
+    "is still what serves the site, and tests/test_headers.py asserts the two agree - so they cannot",
+    "drift while both exist, and firebase.json can be deleted in phase 4 without losing anything.",
+    "",
+    "Render it for a real server with: python3 tools/render-headers.py --server caddy|nginx"
+  ],
+  "paths": [
+    {
+      "path": "**",
+      "note": "",
+      "headers": {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=()"
+      }
+    },
+    {
+      "path": "/index.html",
+      "note": "The free-scan page still carries an inline <script> and inline styles, so its policy has to permit them. The source lists are otherwise exact: every origin here is one the page actually loads from.",
+      "headers": {
+        "Content-Security-Policy": "default-src 'none'; script-src 'self' 'unsafe-inline' https://www.gstatic.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://firestore.googleapis.com https://*.googleapis.com https://*.cloudfunctions.net https://*.run.app; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+      }
+    },
+    {
+      "path": "/console.html",
+      "note": "The operator console keeps its script and styles in separate files and uses no inline handlers, so it gets the strict policy with no 'unsafe-inline' anywhere.",
+      "headers": {
+        "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.run.app https://*.cloudfunctions.net; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+      }
+    }
+  ]
+}
