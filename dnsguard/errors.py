@@ -61,3 +61,16 @@ class CircuitOpenError(UpstreamError):
     """A dependency is failing and calls to it are being shed deliberately."""
 
     status_code = 503
+
+
+class StorageError(DnsGuardError):
+    """The store could not be reached or could not complete a statement.
+
+    Distinct from UpstreamError: a threat feed being unreachable degrades one
+    capability and the pass carries on, whereas losing the store means nothing
+    can be read or written and there is nothing to degrade to. 503, because it
+    is an availability problem and a caller should retry rather than change the
+    request.
+    """
+
+    status_code = 503
