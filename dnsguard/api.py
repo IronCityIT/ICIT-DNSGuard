@@ -715,6 +715,16 @@ def _register_routes(  # noqa: C901 - a route table; splitting it hides the surf
             raise HTTPException(status_code=404, detail="no such scan")
         return found
 
+    @app.get(API_PREFIX + "/tenants/{tenant_id}/scans/{scan_id}/changes")
+    def scan_changes(scan_id: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        """What moved since the last scan of the same target.
+
+        Read-only and viewer-visible: this is the answer to "is it getting
+        better or worse", which is the question the client is paying for.
+        """
+        tenant_id, _ = scope
+        return svc.scans.changes(tenant_id, scan_id).to_dict()
+
     @app.get(API_PREFIX + "/tenants/{tenant_id}/scans/{scan_id}/submitter")
     def get_submitter(scan_id: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
         """Who asked for this scan. Operator role and a route of its own,
