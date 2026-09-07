@@ -31,6 +31,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8000
 
-# DNSGUARD_API_TOKEN must be supplied at run time. The app refuses to start
-# without it rather than coming up unauthenticated.
+# Credentials must be supplied at run time. The app refuses to start without any
+# rather than coming up unauthenticated. Mount a registry file read-only and set
+# DNSGUARD_CREDENTIALS_FILE, or use DNSGUARD_API_TOKEN together with
+# DNSGUARD_API_TENANT for the single-tenant case. Roles default to viewer:
+# operator and approver have to be granted deliberately.
 CMD ["python", "-c", "import uvicorn; from dnsguard.api import create_app; uvicorn.run(create_app(), host='0.0.0.0', port=8000)"]

@@ -270,7 +270,11 @@ deliberately not a pass.
 
 | Name | Read by | Effect |
 |---|---|---|
-| `DNSGUARD_API_TOKEN` | `dnsguard/api.py` | Bearer token. **The API refuses to start without it** unless `allow_anonymous=True` (tests/dev only). |
+| `DNSGUARD_CREDENTIALS_FILE` | `dnsguard/identity.py` | JSON registry of credential digests. The form to use in anger; mount read-only. Wins over the shorthand below. |
+| `DNSGUARD_API_TOKEN` | `dnsguard/identity.py` | Single-credential shorthand. **Requires `DNSGUARD_API_TENANT`.** Minimum 24 characters. |
+| `DNSGUARD_API_TENANT` | `dnsguard/identity.py` | The one tenant that token may act as. |
+| `DNSGUARD_API_ROLES` | `dnsguard/identity.py` | Comma list from `viewer,operator,approver`. **Defaults to `viewer`.** |
+| `DNSGUARD_API_ACTOR` | `dnsguard/identity.py` | Who the audit chain records for that credential. |
 | `DNSGUARD_DATA_DIR` | `dnsguard/api.py`, Dockerfile | Root for `JsonFileStore`. Unset → in-memory store. |
 | `DNSGUARD_FETCH_FEEDS` | `dnsguard/api.py` | `1/true/yes` wires the HTTP feed fetcher. Off → maintenance reports feeds as "not attempted" rather than healthy. |
 
@@ -291,19 +295,40 @@ faithfully), `--modules`/`--group`, `--dry-run`;
 - Roles: `VIEWER`, `OPERATOR`, `APPROVER` exist and every route declares what it
   needs.
 
-**DEFECT D23 — VERIFIED, high.** `_header_auth` in `dnsguard/api.py` returns
+**DEFECT D23 — FIXED.** It read: `_header_auth` returned
 `Principal(tenant_id=client_id, roles=[VIEWER, OPERATOR, APPROVER])`
-unconditionally. So any holder of the one shared token can **claim any tenant**
-and **holds every role, including approver**. Tenant isolation is enforced
-between the claimed tenant and the path (`scoped()`), and that part works — but
-the claim itself is not authenticated beyond the shared secret, and the approval
-gate's separation of duties is not enforced by identity.
+unconditionally, so any holder of the one shared token could claim any tenant and
+held every role including approver. The tenant check itself (`scoped()`) was
+never broken — but a check that faithfully compares two values the *caller*
+supplies is not a boundary. Nothing was exposed, because the API has never been
+deployed.
 
-Mitigating fact (**VERIFIED**): the API is **not deployed anywhere**, so this is
-not currently exposed. It is a blocker for deploying it, not a live incident.
+Replaced by a credential registry, `dnsguard/identity.py`:
 
-**TARGET:** per-principal identity (Auth0 organisation → signed token carrying
-`client_id` and roles), roles from the token, approver distinct from operator.
+- Each credential binds one token to **one tenant, one actor and an explicit set
+  of roles**. Authentication returns that binding; the caller contributes nothing
+  to it.
+- **Tokens are never stored** — only a SHA-256 digest, compared with
+  `hmac.compare_digest`. A registry file that leaks is not a set of working
+  credentials.
+- **Roles default to `viewer`.** Nothing acquires `approver` by omission.
+- **`X-Client-Id` is an assertion, not an instruction.** Still accepted, because
+  existing clients send it, but it must match the credential's tenant; a mismatch
+  is a 403.
+- **`X-Actor` no longer decides the actor.** It was caller-supplied and landed in
+  the append-only audit chain — forgeable attribution on the one record whose
+  value is that it can be believed.
+- **Fail closed.** No credentials configured, and the app does not start. Absent,
+  unknown and disabled credentials share one generic 401.
+
+`tools/credential.py` mints them. The token is printed once and stored nowhere;
+the registry file (mode 0600) holds digests only.
+
+**Still TARGET, and the claim is deliberately small:** this is *not* per-user
+identity. A shared credential still attributes every action to whatever actor it
+names. Real per-person attribution needs the Auth0 organisation work. Until then
+the audit chain records the credential — honestly — rather than a header anyone
+could set.
 
 ### 7.2 Free-scan surfaces (VERIFIED)
 
@@ -508,7 +533,7 @@ secrets. None are guessed here.
 |---|---|---|---|
 | **D24** | High | Live-format HubSpot token committed in `deploy.sh` since `a0d0759`; secrets gate blind to it | File removed and gate broadened in this change. **ROTATION BLOCKED — needs a person with HubSpot access.** |
 | **D25** | High | Secrets gate's PEM private-key rule never ran — word-split, then rejected by grep as an option, then silently skipped | **Fixed** in this change: IFS pinned, `-e` used, and every rule compile-checked so a dead rule fails loudly |
-| **D23** | High | Shared API token grants *any* tenant and *all* roles, approver included | Open. Not exposed (API undeployed). Blocks deployment. |
+| **D23** | High | Shared API token granted *any* tenant and *all* roles, approver included | **Fixed** — credential registry; tenant, actor and roles all come from the credential |
 | — | High | Live Firestore permits unauthenticated `list` of all 34 scans incl. submitter emails | Open. **BLOCKED** on deploy credential or a console action. ShadowScan proves the console route needs no service account. |
 | — | Critical | `vpn.ironcityit.com` → `icit.mynetgear.com` (NXDOMAIN) on a self-service dynamic-DNS zone: claimable subdomain takeover on a trusted hostname | Open, monitored by `check-dns-exposure.py`. **One DNS change: delete or re-claim.** Needs DNS access this environment does not have. |
 | — | High | `iron-city-it-threatinspector` carries original test-mode rules; `ironcity-attacksimpro` permits enumeration | Flagged, **not this repo's to change** |
@@ -599,7 +624,9 @@ Ordered by value, nonblocked first.
 2. **Decide the connection driver and add it to `requirements.txt`.** The store
    takes any DB-API 2.0 factory, so this is a deployment choice rather than a
    code one, and it is deliberately not made here.
-3. **Fix D23** — real per-principal identity and roles; approver ≠ operator.
+3. **Per-user identity (the rest of D23).** The credential registry fixed the
+   boundary; it did not make attribution per-person. Auth0 organisation → signed
+   token carrying `client_id` and roles.
 4. **Phase 2 ingest API**, tenant-partitioned from the first row.
 5. **Re-express `firebase.json`'s CSP and security headers** for the self-hosted
    server, so the hardening survives the move rather than being rediscovered.
@@ -634,7 +661,9 @@ Everything asserted as VERIFIED above traces to one of these.
 | SSRF guard refuses metadata/loopback/private over https | Direct `HttpFetcher.check()` calls | 2026-09-06 |
 | CI runner sweeps 56 names (certificate transparency unavailable) | `gh run view --log`, DNS comparison step | 2026-09-06 |
 | D24 committed since `a0d0759` (2026-01-30) | `git log -S` on `deploy.sh` | 2026-09-07 |
-| D23 grants all roles and any tenant | Read of `_header_auth` in `dnsguard/api.py` | 2026-09-07 |
+| D23 granted all roles and any tenant | Read of `_header_auth` in `dnsguard/api.py` | 2026-09-07 |
+| D23 fixed: tenant/roles/actor come from the credential | `pytest tests/test_identity.py tests/test_api.py` — 33 + 43 passed, including a credential refused when it claims another tenant, a viewer refused an operator route, an operator refused the approval route, and a forged `X-Actor` absent from the audit chain | 2026-09-07 |
+| Credential CLI stores digests only, mode 0600 | `tools/credential.py mint --append`, then inspected the file | 2026-09-07 |
 | D25 — PEM rule word-split into four fragments | `for p in $patterns` echoed in `sh`, showing the split tokens | 2026-09-07 |
 | D25 — grep rejects a `-`-leading pattern as an option (exit 2, read as "no match") | `grep -rIEn '-----BEGIN' file` → `grep: unrecognized option` | 2026-09-07 |
 | Gate now fires on 9 planted shapes and passes a Firebase Web key | `pytest tests/test_gates.py` — 15 passed | 2026-09-07 |
