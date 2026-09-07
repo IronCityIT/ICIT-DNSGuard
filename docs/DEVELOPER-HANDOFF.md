@@ -52,6 +52,7 @@ currently serving real users. **VERIFIED**.
 | Scan framework | `module_framework/` | **VERIFIED** — `base.py` (Finding/Asset/ScanModule contracts), `registry.py` (discovery, groups), `targets.py` (ip/cidr/url/domain/hostname/file), `cli.py` |
 | Scan modules (11) | `module_framework/modules/` | **VERIFIED** — see §2.2 |
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
+| SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
 | Scanner entry point | `tools/scan.py` | **VERIFIED** — run live against `ironcityit.com` |
 | Maintenance loop | `tools/maintain.py`, `dnsguard/maintenance.py` | **VERIFIED** — live feed fetch, 304 handling, audit verify |
 | Exposure ratchets | `tools/check-exposure.py`, `tools/check-dns-exposure.py` | **VERIFIED** — both run in CI on every PR |
@@ -157,8 +158,16 @@ nothing new may be built on them.
 tenant id, and the store refuses to build a path without one. There is no API in
 `dnsguard/store.py` that can return another tenant's document.
 
-Implementations: `MemoryStore` (tests, dev) and `JsonFileStore` (atomic
-temp-file + rename writes, one JSON file per document). **VERIFIED.**
+Implementations: `MemoryStore` (tests, dev), `JsonFileStore` (atomic temp-file +
+rename writes, one JSON file per document), and `SqlDocumentStore`
+(`dnsguard/sqlstore.py`, one row per document keyed on the
+`(tenant_id, collection, doc_id)` triple as real indexed columns). All three run
+the same contract suite. **VERIFIED** — `tests/test_store.py` is parametrised
+across them.
+
+The SQL store keeps the body as JSON deliberately: changing the storage engine
+and the schema shape in one step removes the ability to tell which change broke
+something. The relational tables in §4.3 come after the engine is proven.
 
 Collections in use (**VERIFIED** from the modules that write them):
 `feeds`, `feedsnapshots`, `feedindicators`, `policies`, `tenants`, `sites`,
@@ -468,7 +477,14 @@ anything is switched, and nothing is deleted until the replacement is proven.**
   broaden the secrets gate. *(This change.)*
 - **Phase 1 — MariaDB-backed `DocumentStore`.** Additive: a new implementation
   behind the existing abstraction. Nothing switches to it. Contract tests run
-  against all implementations.
+  against all implementations. **DONE, with one caveat** — `dnsguard/sqlstore.py`.
+  The full `DocumentStore` contract is **VERIFIED** against a real engine
+  (SQLite) through this class. Execution against a live **MariaDB is NOT
+  VERIFIED**: no server, no client library and no container runtime exists in
+  the environment it was written in, so the MariaDB dialect's DDL and upsert are
+  asserted as statements and have never been run. **The first connection to a
+  real MariaDB is the test that has not happened yet.** The dialect is four
+  strings, separated deliberately so that test is cheap.
 - **Phase 2 — self-hosted ingest + read API** on NAS infrastructure, replacing
   `storeScanResults` and `getScanStatus`, writing MariaDB and NAS volumes.
   Authenticated; tenant-partitioned from the first row.
@@ -577,19 +593,24 @@ documented RPO/RTO. **None of these figures are set — do not invent them.**
 
 Ordered by value, nonblocked first.
 
-1. **Phase 1 MariaDB store** behind `DocumentStore` (additive, no cutover).
-2. **Fix D23** — real per-principal identity and roles; approver ≠ operator.
-3. **Phase 2 ingest API**, tenant-partitioned from the first row.
-4. **Re-express `firebase.json`'s CSP and security headers** for the self-hosted
+1. **Run `dnsguard/sqlstore.py` against a real MariaDB.** Everything else in
+   Phase 2 rests on it, and it is currently the only unexecuted code path in the
+   storage layer. Needs a server; nothing else.
+2. **Decide the connection driver and add it to `requirements.txt`.** The store
+   takes any DB-API 2.0 factory, so this is a deployment choice rather than a
+   code one, and it is deliberately not made here.
+3. **Fix D23** — real per-principal identity and roles; approver ≠ operator.
+4. **Phase 2 ingest API**, tenant-partitioned from the first row.
+5. **Re-express `firebase.json`'s CSP and security headers** for the self-hosted
    server, so the hardening survives the move rather than being rediscovered.
-5. **Change detection** — `Finding.fingerprint()` exists and is stable across
+6. **Change detection** — `Finding.fingerprint()` exists and is stable across
    scans, but nothing yet diffs two scans into new/resolved/still-open.
-6. **`AssetSink` is dead code** — `module_framework/base.py` defines a
+7. **`AssetSink` is dead code** — `module_framework/base.py` defines a
    deduplicating inventory sink, `tools/scan.py` never creates one and no module
    uses it. Either wire it up or remove it.
-7. **Coverage gaps**: `module_framework/cli.py` 0%, `network_path` 33%,
+8. **Coverage gaps**: `module_framework/cli.py` 0%, `network_path` 33%,
    `resolver_performance` 33%, `transport_security_audit` 42%.
-8. **Rate limiting** on the public trigger endpoint — currently **UNKNOWN**.
+9. **Rate limiting** on the public trigger endpoint — currently **UNKNOWN**.
 
 ---
 
@@ -619,6 +640,9 @@ Everything asserted as VERIFIED above traces to one of these.
 | Gate now fires on 9 planted shapes and passes a Firebase Web key | `pytest tests/test_gates.py` — 15 passed | 2026-09-07 |
 | `deploy.sh`, `index.html`, `index.html.backup`, `index.html.old` unserved | `firebase.json` hosting public dir is `dashboard/public`; `.backup`/`.old` in its ignore list | 2026-09-07 |
 | No MariaDB/driver/Docker in environment | `which`, import probes for `pymysql`, `MySQLdb`, `sqlalchemy` | 2026-09-07 |
+| SQL store passes the whole `DocumentStore` contract on a real engine | `pytest tests/test_store.py` parametrised over memory/file/sql (SQLite) | 2026-09-07 |
+| SQL store reconnects once after a dead socket, and does not loop | `pytest tests/test_sqlstore.py` — 24 passed | 2026-09-07 |
+| MariaDB dialect **never executed** | No server, driver or container runtime available — stated, not worked around | 2026-09-07 |
 
 **Anything not in this table, and not labelled TARGET, should be treated as
 UNKNOWN until somebody establishes it.**

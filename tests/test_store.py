@@ -6,12 +6,31 @@ from __future__ import annotations
 import pytest
 
 from dnsguard.errors import NotFoundError, ValidationError
+from dnsguard.sqlstore import SQLITE, SqlDocumentStore
 from dnsguard.store import JsonFileStore, MemoryStore, validate_segment
 
 
-@pytest.fixture(params=["memory", "file"])
+@pytest.fixture(params=["memory", "file", "sql"])
 def store(request, tmp_path):
-    return MemoryStore() if request.param == "memory" else JsonFileStore(tmp_path / "data")
+    """Every implementation, through one contract.
+
+    The SQL store is here rather than in a file of its own because that is the
+    whole claim being made about it: it is not a new kind of store, it is the
+    same store on a different engine. Anything it does differently should fail
+    one of the tests below, and if these pass for memory and file but not for
+    SQL, the SQL one is wrong.
+
+    SQLite is the engine because it is the one available. MariaDB is the target
+    and is NOT exercised here — see the note in dnsguard/sqlstore.py.
+    """
+    if request.param == "memory":
+        return MemoryStore()
+    if request.param == "file":
+        return JsonFileStore(tmp_path / "data")
+    import sqlite3
+
+    path = str(tmp_path / "documents.sqlite3")
+    return SqlDocumentStore(lambda: sqlite3.connect(path), dialect=SQLITE)
 
 
 def test_round_trip(store):
