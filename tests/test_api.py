@@ -741,3 +741,42 @@ def test_scans_are_listed_for_the_tenant_only(services):
     client_for(services, tenant="globex").post("/api/v1/tenants/globex/scans", json=a_report("s-b"))
     listed = client_for(services, tenant="acme").get("/api/v1/tenants/acme/scans").json()["scans"]
     assert [s["scan_id"] for s in listed] == ["s-a"]
+
+
+def test_changes_between_two_scans_are_reachable_over_http(client):
+    spf = {
+        "module": "spf_audit",
+        "target": "acme.example",
+        "asset": "acme.example",
+        "title": "Missing SPF Record",
+        "fingerprint": "aaaa1111",
+    }
+    client.post(
+        "/api/v1/tenants/acme/scans",
+        json=a_report("s-1", findings=[{**spf, "severity": "medium"}]),
+    )
+    client.post(
+        "/api/v1/tenants/acme/scans",
+        json=a_report("s-2", findings=[{**spf, "severity": "critical"}]),
+    )
+    changes = client.get("/api/v1/tenants/acme/scans/s-2/changes")
+    assert changes.status_code == 200
+    body = changes.json()
+    assert body["previous_scan_id"] == "s-1"
+    assert body["regressed"] is True
+    assert body["summary"]["worsened"] == 1
+
+
+def test_a_viewer_can_see_what_changed(services):
+    """ "Is it getting better or worse" is the question the client is paying for,
+    and it must not need the role that changes things."""
+    operator = client_for(services)
+    operator.post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    reader = client_for(services, roles=["viewer"])
+    assert reader.get("/api/v1/tenants/acme/scans/s-1/changes").status_code == 200
+
+
+def test_another_tenant_cannot_read_the_comparison(services):
+    client_for(services).post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    intruder = client_for(services, tenant="globex")
+    assert intruder.get("/api/v1/tenants/acme/scans/s-1/changes").status_code == 403

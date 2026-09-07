@@ -54,7 +54,8 @@ from typing import Any
 
 from .audit import AuditLog
 from .clock import Clock, iso
-from .errors import ValidationError
+from .diff import Comparison, compare
+from .errors import NotFoundError, ValidationError
 from .store import DocumentStore, validate_segment
 
 SCAN_COLLECTION = "scans"
@@ -184,6 +185,44 @@ class ScanService:
         scans = self.store.list(tenant_id, SCAN_COLLECTION)
         scans.sort(key=lambda d: str(d.get("received_at", "")), reverse=True)
         return scans[:limit]
+
+    def previous_for(self, tenant_id: str, scan: dict[str, Any]) -> dict[str, Any] | None:
+        """The most recent earlier scan of the same target.
+
+        Same target, because comparing a scan of one domain against a scan of
+        another produces a diff in which everything is new and everything is
+        resolved — technically true and completely useless.
+        """
+        target = str(scan.get("target") or scan.get("domain") or "")
+
+        def position(document: dict[str, Any]) -> tuple[str, str]:
+            # scan_id breaks ties on the timestamp. Two scans ingested inside the
+            # same second is unlikely in production and certain under a frozen
+            # clock, and ordering on the timestamp alone leaves both of them
+            # without a predecessor — so the second one silently reports itself
+            # as a baseline and the comparison never happens.
+            return (str(document.get("received_at", "")), str(document.get("scan_id", "")))
+
+        here = position(scan)
+        candidates = [
+            other
+            for other in self.store.list(tenant_id, SCAN_COLLECTION)
+            if str(other.get("target") or other.get("domain") or "") == target
+            and position(other) < here
+            # An unfinished scan has nothing to compare against, and a failed one
+            # has no findings — diffing against it would report every real
+            # finding as newly appeared.
+            and other.get("status") == "complete"
+        ]
+        candidates.sort(key=position)
+        return candidates[-1] if candidates else None
+
+    def changes(self, tenant_id: str, scan_id: str) -> Comparison:
+        """What moved between this scan and the last one of the same target."""
+        current = self.get(tenant_id, scan_id)
+        if current is None:
+            raise NotFoundError(f"no such scan {scan_id}")
+        return compare(self.previous_for(tenant_id, current), current)
 
     def submitter(self, tenant_id: str, scan_id: str) -> dict[str, Any] | None:
         """The contact details, fetched deliberately and separately. Reading

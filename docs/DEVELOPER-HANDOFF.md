@@ -54,6 +54,7 @@ currently serving real users. **VERIFIED**.
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
 | SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
 | Scan ingest / retrieval | `dnsguard/scans.py` | **VERIFIED** as code+tests. Replaces `storeScanResults`; **not deployed, not cut over** |
+| Change detection | `dnsguard/diff.py` | **VERIFIED** — new / resolved / worsened / improved / unchanged between two scans of the same target |
 | Credential registry | `dnsguard/identity.py`, `tools/credential.py` | **VERIFIED** — tenant, actor and roles come from the credential |
 | Scanner entry point | `tools/scan.py` | **VERIFIED** — run live against `ironcityit.com` |
 | Maintenance loop | `tools/maintain.py`, `dnsguard/maintenance.py` | **VERIFIED** — live feed fetch, 304 handling, audit verify |
@@ -660,8 +661,9 @@ Ordered by value, nonblocked first.
 4. **Phase 2 ingest API**, tenant-partitioned from the first row.
 5. **Re-express `firebase.json`'s CSP and security headers** for the self-hosted
    server, so the hardening survives the move rather than being rediscovered.
-6. **Change detection** — `Finding.fingerprint()` exists and is stable across
-   scans, but nothing yet diffs two scans into new/resolved/still-open.
+6. **Surface change detection to a client.** `dnsguard/diff.py` computes it and
+   `GET /scans/{id}/changes` serves it, but no page renders it yet — and "is it
+   getting better or worse" is the question the client is actually paying for.
 7. **`AssetSink` is dead code** — `module_framework/base.py` defines a
    deduplicating inventory sink, `tools/scan.py` never creates one and no module
    uses it. Either wire it up or remove it.
@@ -695,6 +697,7 @@ Everything asserted as VERIFIED above traces to one of these.
 | D23 fixed: tenant/roles/actor come from the credential | `pytest tests/test_identity.py tests/test_api.py` — 33 + 43 passed, including a credential refused when it claims another tenant, a viewer refused an operator route, an operator refused the approval route, and a forged `X-Actor` absent from the audit chain | 2026-09-07 |
 | Credential CLI stores digests only, mode 0600 | `tools/credential.py mint --append`, then inspected the file | 2026-09-07 |
 | Scan ingest keeps status monotonic, partitions by tenant, and keeps the submitter address off the scan | `pytest tests/test_scans.py tests/test_api.py` — 34 + 54 passed | 2026-09-07 |
+| Change detection against **real** data | Two genuine `ironcityit.com` reports (one taken on a resolver that could not confirm, one on a conformant resolver) ingested and compared: `regressed: True`, the critical takeover reported `new`, the inconclusive placeholder `resolved`, audit chain valid | 2026-09-07 |
 | D25 — PEM rule word-split into four fragments | `for p in $patterns` echoed in `sh`, showing the split tokens | 2026-09-07 |
 | D25 — grep rejects a `-`-leading pattern as an option (exit 2, read as "no match") | `grep -rIEn '-----BEGIN' file` → `grep: unrecognized option` | 2026-09-07 |
 | Gate now fires on 9 planted shapes and passes a Firebase Web key | `pytest tests/test_gates.py` — 15 passed | 2026-09-07 |
