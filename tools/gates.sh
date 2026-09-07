@@ -214,10 +214,21 @@ gate_dashboard() {
 # This script itself is shell that ships and runs on a BusyBox box. Nothing was
 # checking it, which is how the SC2129 that broke the first CI run got written.
 gate_shell() {
-    say "gate script"
+    say "shell scripts"
     have shellcheck || { skip "shellcheck not installed"; return 0; }
-    shellcheck -s sh tools/gates.sh || fail "tools/gates.sh has shellcheck findings"
-    printf 'gate script clean\n'
+    # Every script under tools/, not just this one by name. A gate that checks a
+    # named file stops covering the repository the moment somebody adds a second
+    # script — and these run on a BusyBox box, where a bashism is a runtime
+    # failure rather than a lint finding.
+    checked=0
+    for script in tools/*.sh; do
+        [ -f "$script" ] || continue
+        shellcheck -s sh "$script" || fail "$script has shellcheck findings"
+        printf '  %s clean\n' "$script"
+        checked=$((checked + 1))
+    done
+    [ "$checked" -gt 0 ] || fail "no shell scripts found to check - the glob is wrong"
+    printf '%s shell script(s) clean\n' "$checked"
 }
 
 gate_build() {
@@ -241,6 +252,13 @@ print('control plane imports:', dnsguard.__version__)
     fi
 }
 
+# An image that builds is not an image that runs. A missing runtime dependency, a
+# bad CMD, a permission problem on the data volume or an entrypoint that dies on
+# start all pass `docker build` and fail the first time anybody deploys.
+gate_container() {
+    sh tools/container-smoke.sh
+}
+
 gate_all() {
     gate_lint
     gate_format
@@ -253,6 +271,7 @@ gate_all() {
     gate_secrets
     gate_shell
     gate_build
+    gate_container
     say "all gates passed"
 }
 
@@ -268,9 +287,10 @@ case "${1:-all}" in
     secrets)   gate_secrets ;;
     shell)     gate_shell ;;
     build)     gate_build ;;
+    container) gate_container ;;
     all)       gate_all ;;
     *)
-        printf 'usage: %s [lint|format|typecheck|test|json|yaml|node|dashboard|secrets|shell|build|all]\n' "$0"
+        printf 'usage: %s [lint|format|typecheck|test|json|yaml|node|dashboard|secrets|shell|build|container|all]\n' "$0"
         exit 2
         ;;
 esac
