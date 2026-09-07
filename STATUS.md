@@ -512,3 +512,66 @@ actually made gets held.
 enumeration is still open. **`vpn.ironcityit.com` is still live and still
 claimable** — now continuously monitored, which is not the same as fixed. One DNS
 change: delete the record, or re-claim the destination.
+
+---
+
+# Discovery coverage — 2026-09-06
+
+**Branch:** `productize/dnsguard-discovery-coverage` · **Base:** `main` (at
+`c85e2a1`, PR #10 merged).
+
+Found by reading the CI output of the previous change rather than by review. The
+DNS ratchet passed on the GitHub runner and reported **2 aliases**; the same
+command locally reported **7**. Both were green.
+
+## D21 — a security gate that could pass having checked a third of the surface
+
+`_crtsh_names` was best-effort by design, which is right: a third party being
+slow must not fail a scan. But it swallowed the failure. When certificate
+transparency did not answer, discovery silently fell back to the 56 conventional
+probe names, and produced an identical clean result over a much smaller surface.
+A dangling alias on a name nobody would guess — which is exactly the kind
+certificate transparency exists to find — would not have been discovered, and
+nothing in the output said so.
+
+That is the same defect class this repository has been working through all week:
+a check that reports a pass without having checked.
+
+**Fixed.** The lookup now returns its status alongside its names, and that status
+travels all the way to the client-facing finding:
+
+* `subdomain_discovery` and `alias_takeover` both state what was examined —
+  *"56 conventional names only — certificate transparency was unavailable, so
+  names that would not be guessed were not examined"*;
+* the summary finding's **confidence drops to `possible`** over a reduced sweep,
+  because a clean result over a smaller surface is a smaller claim;
+* the ratchet reports a `COVERAGE` line, and `--require-certificate-transparency`
+  makes it exit 2 for whoever wants the stronger guarantee.
+
+Opting out (`--no-certificate-transparency`) is recorded as `not requested` and
+is *not* treated as degradation. Conflating a deliberate setting with a failure
+would either nag about a choice or hide a real gap.
+
+## Why it does not fail by default
+
+Failing on it would put a third party's uptime in the path of every pull request.
+A gate that goes red for reasons unrelated to the change is a gate people learn
+to click past — which is the failure mode the whole baseline design is written
+against. So: reported always, fatal only when asked.
+
+## PROVEN — verified this run
+
+| Check | Result |
+|---|---|
+| Gates | ✅ all eleven green |
+| Tests | ✅ 62 in the two affected suites; whole suite green |
+| Live, certificate transparency reachable | ✅ 7 aliases, coverage `ok`, confidence `confirmed` |
+| Live, transport forced to fail | ✅ 2 aliases, coverage `unavailable`, confidence `possible`, degradation stated in the finding text |
+| Live, `--no-certificate-transparency` | ✅ recorded as `not requested`, not as degradation |
+| Regression still outranks reduced coverage | ✅ a real regression exits 1, not 2 |
+
+## Unchanged
+
+`FIREBASE_SERVICE_ACCOUNT` still absent; nothing deployed. The live Firestore
+enumeration is still open. **`vpn.ironcityit.com` is still live and still
+claimable** — one DNS change: delete the record, or re-claim the destination.

@@ -66,7 +66,7 @@ def install(monkeypatch, dns: FakeDns, candidates: set[str]):
     monkeypatch.setattr(alias_takeover, "make_resolver", lambda *a, **k: object())
     monkeypatch.setattr(alias_takeover, "query", dns.query)
     monkeypatch.setattr(alias_takeover, "resolution", dns.resolution)
-    monkeypatch.setattr(alias_takeover, "_crtsh_names", lambda *a, **k: set(candidates))
+    monkeypatch.setattr(alias_takeover, "_crtsh_names", lambda *a, **k: (set(candidates), "ok"))
     monkeypatch.setattr(alias_takeover, "_default_session", lambda: object())
     # zone_apex is imported into the module and calls the *module-level*
     # resolution it closed over at import time, so it is stubbed by hand.
@@ -410,7 +410,7 @@ def test_discovery_work_is_shared_with_the_inventory_module(monkeypatch):
 
     def counting_crtsh(*_a, **_k):
         calls.append(1)
-        return {"vpn.example.com"}
+        return {"vpn.example.com"}, "ok"
 
     install(monkeypatch, dns, set())
     monkeypatch.setattr(alias_takeover, "_crtsh_names", counting_crtsh)
@@ -551,3 +551,53 @@ def test_a_lookup_error_is_still_distinguished_from_an_untrustworthy_resolver(mo
     )
     row = [f for f in run(monkeypatch, dns, {"api.example.com"}) if f.asset == "api.example.com"][0]
     assert row.evidence["reason"] == "lookup did not complete"
+
+
+# ── discovery coverage: a clean result over a smaller surface ────────────────
+
+
+def test_a_failed_certificate_transparency_lookup_is_reported_not_swallowed(monkeypatch):
+    """The gap this exists for: crt.sh not answering halves the discovered
+    surface and used to produce an identical clean result. A check that passes
+    without having checked is the failure mode this whole module is written
+    against."""
+    dns = FakeDns({("vpn.example.com", "CNAME"): ["a.mynetgear.com."]})
+    install(monkeypatch, dns, set())
+    monkeypatch.setattr(alias_takeover, "_crtsh_names", lambda *a, **k: (set(), "unavailable"))
+
+    findings = AliasTakeover().run(one("example.com"), {})
+    summary = [f for f in findings if f.title == "Alias destinations checked"][0]
+    assert summary.evidence["coverage"]["certificate_transparency"] == "unavailable"
+    assert "certificate transparency was unavailable" in summary.detail
+
+
+def test_a_reduced_sweep_lowers_the_confidence_of_the_clean_result(monkeypatch):
+    """A clean result over a reduced surface is a smaller claim than a clean
+    result over the full one, and must not read as the same one."""
+    dns = FakeDns({("vpn.example.com", "CNAME"): ["a.mynetgear.com."]})
+    install(monkeypatch, dns, set())
+    monkeypatch.setattr(alias_takeover, "_crtsh_names", lambda *a, **k: (set(), "unavailable"))
+    findings = AliasTakeover().run(one("example.com"), {})
+    assert [f for f in findings if f.title == "Alias destinations checked"][0].confidence == (
+        "possible"
+    )
+
+
+def test_a_full_sweep_is_reported_as_confirmed(monkeypatch):
+    dns = FakeDns({("vpn.example.com", "CNAME"): ["a.mynetgear.com."]})
+    findings = run(monkeypatch, dns, {"vpn.example.com"})
+    summary = [f for f in findings if f.title == "Alias destinations checked"][0]
+    assert summary.confidence == "confirmed"
+    assert summary.evidence["coverage"]["certificate_transparency"] == "ok"
+
+
+def test_declining_certificate_transparency_is_not_the_same_as_it_failing(monkeypatch):
+    """Opting out is a choice the operator made; failing is a gap they did not
+    ask for. Conflating them would either nag about a deliberate setting or hide
+    a real degradation."""
+    dns = FakeDns({("vpn.example.com", "CNAME"): ["a.mynetgear.com."]})
+    install(monkeypatch, dns, set())
+    findings = AliasTakeover().run(one("example.com"), {"use_certificate_transparency": False})
+    summary = [f for f in findings if f.title == "Alias destinations checked"][0]
+    assert summary.evidence["coverage"]["certificate_transparency"] == "not requested"
+    assert summary.confidence == "confirmed"

@@ -231,7 +231,9 @@ def test_dns_records_module_reports_the_inventory(monkeypatch):
 
 def test_dangling_alias_is_high(monkeypatch):
     monkeypatch.setattr(subdomain_discovery, "make_resolver", lambda *a, **k: object())
-    monkeypatch.setattr(subdomain_discovery, "_crtsh_names", lambda *a, **k: {"old.example.com"})
+    monkeypatch.setattr(
+        subdomain_discovery, "_crtsh_names", lambda *a, **k: ({"old.example.com"}, "ok")
+    )
 
     def fake_query(_res, name, rtype):
         if name == "old.example.com" and rtype == "CNAME":
@@ -249,7 +251,7 @@ def test_dangling_alias_is_high(monkeypatch):
 
 def test_sensitive_hostnames_are_flagged(monkeypatch):
     monkeypatch.setattr(subdomain_discovery, "make_resolver", lambda *a, **k: object())
-    monkeypatch.setattr(subdomain_discovery, "_crtsh_names", lambda *a, **k: set())
+    monkeypatch.setattr(subdomain_discovery, "_crtsh_names", lambda *a, **k: (set(), "ok"))
 
     def fake_query(_res, name, rtype):
         if rtype == "A" and name in ("admin.example.com", "staging.example.com"):
@@ -270,7 +272,7 @@ def test_certificate_transparency_can_be_switched_off(monkeypatch):
     monkeypatch.setattr(subdomain_discovery, "make_resolver", lambda *a, **k: object())
     called = []
     monkeypatch.setattr(
-        subdomain_discovery, "_crtsh_names", lambda *a, **k: called.append(1) or set()
+        subdomain_discovery, "_crtsh_names", lambda *a, **k: (called.append(1) or set(), "ok")
     )
     monkeypatch.setattr(subdomain_discovery, "query", lambda *a, **k: [])
     subdomain_discovery.SubdomainDiscovery().run(

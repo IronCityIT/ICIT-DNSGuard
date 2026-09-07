@@ -100,16 +100,48 @@ SENSITIVE_NAMES = frozenset(
 LARGE_SURFACE = 50
 
 
-def _crtsh_names(session: Any, domain: str, timeout: float = 15.0) -> set[str]:
-    """Names this domain has been issued certificates for. Best-effort by design:
-    crt.sh is a third party and a scan must not fail because it is slow."""
+def coverage_is_full(coverage: dict[str, Any]) -> bool:
+    """Did discovery see everything it was asked to see?
+
+    Certificate transparency is the half that finds names nobody would guess. If
+    it was requested and did not answer, the sweep covered conventional names
+    only — a materially smaller surface, and the caller is entitled to know
+    before treating a clean result as a clean domain.
+    """
+    return coverage.get("certificate_transparency") in ("ok", "not requested")
+
+
+def coverage_note(coverage: dict[str, Any]) -> str:
+    """One clause a person can read, describing what was actually examined."""
+    probes = coverage.get("probe_names", 0)
+    status = coverage.get("certificate_transparency")
+    if status == "ok":
+        found = coverage.get("certificate_transparency_names", 0)
+        return f"({probes} conventional, {found} from certificate transparency)."
+    if status == "not requested":
+        return f"({probes} conventional names; certificate transparency was not requested)."
+    return (
+        f"({probes} conventional names only — certificate transparency was unavailable, so "
+        "names that would not be guessed were not examined)."
+    )
+
+
+def _crtsh_names(session: Any, domain: str, timeout: float = 15.0) -> tuple[set[str], str]:
+    """Names this domain has been issued certificates for, and whether the
+    lookup actually worked.
+
+    Still best-effort — a third party being slow must not fail a scan — but the
+    *status* is returned rather than swallowed. Silently degrading to the probe
+    list halves the discovered surface and reports the same clean result, which
+    is the shape of a check that passes without having checked.
+    """
     try:
         resp = session.get(f"https://crt.sh/?q=%.{domain}&output=json", timeout=timeout)
         if resp.status_code != 200:
-            return set()
+            return set(), "unavailable"
         entries = resp.json()
     except Exception:
-        return set()
+        return set(), "unavailable"
 
     names: set[str] = set()
     for entry in entries:
@@ -117,7 +149,7 @@ def _crtsh_names(session: Any, domain: str, timeout: float = 15.0) -> set[str]:
             name = line.strip().lower().rstrip(".")
             if name and name.endswith(domain) and "*" not in name:
                 names.add(name)
-    return names
+    return names, "ok"
 
 
 class SubdomainDiscovery(ScanModule):
@@ -142,11 +174,23 @@ class SubdomainDiscovery(ScanModule):
         cached = ctx.get("alias_candidates")
         if isinstance(cached, dict) and cached.get("root") == host:
             candidates = set(cached["names"])
+            coverage = cached["coverage"]
         else:
             candidates = {f"{name}.{host}" for name in PROBE_NAMES}
+            coverage = {
+                "probe_names": len(PROBE_NAMES),
+                "certificate_transparency": "not requested",
+            }
             if ctx.get("use_certificate_transparency", True):
-                candidates |= _crtsh_names(session, host)
-            ctx["alias_candidates"] = {"root": host, "names": sorted(candidates)}
+                found, status = _crtsh_names(session, host)
+                candidates |= found
+                coverage["certificate_transparency"] = status
+                coverage["certificate_transparency_names"] = len(found)
+            ctx["alias_candidates"] = {
+                "root": host,
+                "names": sorted(candidates),
+                "coverage": coverage,
+            }
 
         def resolve(fqdn: str) -> dict[str, Any] | None:
             addresses = query(res, fqdn, "A")
@@ -226,8 +270,12 @@ class SubdomainDiscovery(ScanModule):
                 target=host,
                 severity="info",
                 title="Public host inventory collected",
-                detail=f"{len(live)} host(s) resolve under {host}.",
-                evidence={"hosts": live},
+                detail=(
+                    f"{len(live)} host(s) resolve under {host}, from {len(candidates)} name(s) "
+                    + coverage_note(coverage)
+                ),
+                evidence={"hosts": live, "coverage": coverage},
+                confidence="confirmed" if coverage_is_full(coverage) else "possible",
             )
         )
         return findings

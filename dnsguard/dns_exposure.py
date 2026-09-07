@@ -60,11 +60,20 @@ def rank(posture: str) -> int:
         return len(POSTURES)
 
 
-def compare(observed: list[dict[str, Any]], baseline: dict[str, Any]) -> dict[str, Any]:
+def compare(
+    observed: list[dict[str, Any]],
+    baseline: dict[str, Any],
+    coverage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compare one domain's observed aliases against its recorded ones.
 
     `observed` is the `checked` evidence the takeover module emits: one row per
     alias, each with `host`, `destination` and `verdict`.
+
+    `coverage` is what discovery actually examined. It is carried through
+    untouched rather than folded into the verdict: a reduced sweep does not make
+    any alias worse, but it does mean the gate looked at less than it appears to,
+    and whoever reads a green build is entitled to see that.
 
     Returns regressions, improvements, unverified rows and the unchanged ones,
     each with enough detail to act on without re-running anything.
@@ -128,6 +137,7 @@ def compare(observed: list[dict[str, Any]], baseline: dict[str, Any]) -> dict[st
 
     return {
         "domain": baseline.get("domain", ""),
+        "coverage": coverage or {},
         "regressions": regressions,
         "improvements": improvements,
         "unverified": unverified,
@@ -136,21 +146,45 @@ def compare(observed: list[dict[str, Any]], baseline: dict[str, Any]) -> dict[st
     }
 
 
-def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
+def reduced_coverage(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Domains where discovery saw less than it was asked to.
+
+    Certificate transparency is the half that finds names nobody would guess.
+    When it does not answer, the sweep covered conventional names only — so a
+    dangling alias on an unconventional name would not have been discovered, and
+    a green build over that surface is a smaller claim than it looks.
+    """
+    return [
+        {"domain": result["domain"], "coverage": result["coverage"]}
+        for result in results
+        if result.get("coverage", {}).get("certificate_transparency") == "unavailable"
+    ]
+
+
+def summarise(results: list[dict[str, Any]], strict_coverage: bool = False) -> dict[str, Any]:
     """Roll several domains' comparisons into one verdict and exit code.
 
     Exit codes are distinct on purpose. "Something got worse" and "nothing could
     be checked" need different responses from whoever sees the red build, and
     collapsing them would send them looking in the wrong place.
+
+    Reduced coverage is reported always and fails only under `strict_coverage`.
+    Failing by default would put a third party's uptime in the path of every
+    pull request, and a gate that goes red for reasons unrelated to the change is
+    a gate people learn to click past — the failure mode this whole file is
+    written against.
     """
     regressions = [r for result in results for r in result["regressions"]]
     unverified = [u for result in results for u in result["unverified"]]
     improvements = [i for result in results for i in result["improvements"]]
+    reduced = reduced_coverage(results)
 
     if regressions:
         code, verdict = 1, "regressed"
     elif unverified:
         code, verdict = 2, "unverified"
+    elif reduced and strict_coverage:
+        code, verdict = 2, "reduced_coverage"
     else:
         code, verdict = 0, "held"
 
@@ -160,5 +194,6 @@ def summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
         "regressions": regressions,
         "unverified": unverified,
         "improvements": improvements,
+        "reduced_coverage": reduced,
         "domains": results,
     }
