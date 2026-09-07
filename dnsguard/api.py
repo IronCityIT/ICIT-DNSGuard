@@ -54,6 +54,7 @@ from .identity import CredentialRegistry
 from .maintenance import MaintenanceRunner
 from .policy import PolicyService, Rule
 from .resilience import BreakerRegistry, try_call
+from .scans import ScanService
 from .store import DocumentStore, JsonFileStore, MemoryStore
 from .tenancy import Site, Tenant, TenantDirectory
 
@@ -85,6 +86,20 @@ class RuleIn(BaseModel):
     precedence: int = 100
     redirect_to: str = ""
     enabled: bool = True
+
+
+class ScanIn(BaseModel):
+    """A scan result as the pipeline reports it.
+
+    Deliberately permissive about everything except the identity fields: the
+    report's own shape is the product's contract and is preserved whole, so
+    adding a field to a report does not require a change here.
+    """
+
+    model_config = {"extra": "allow"}
+
+    scan_id: str
+    status: str = "complete"
 
 
 class DraftIn(BaseModel):
@@ -168,6 +183,7 @@ class Services:
     evidence: EvidenceExporter
     breakers: BreakerRegistry
     maintenance: MaintenanceRunner
+    scans: ScanService
 
     @classmethod
     def build(cls, store: DocumentStore | None = None, clock: Clock | None = None) -> Services:
@@ -226,6 +242,7 @@ class Services:
             evidence=evidence,
             breakers=breakers,
             maintenance=maintenance,
+            scans=ScanService(store=store, audit=audit, clock=clock),
         )
 
 
@@ -667,6 +684,55 @@ def _register_routes(  # noqa: C901 - a route table; splitting it hides the surf
             "degraded": result.degraded,
             "reason": result.error if result.degraded else "",
         }
+
+    # ── scans ───────────────────────────────────────────────────────────────
+
+    @app.post(API_PREFIX + "/tenants/{tenant_id}/scans", status_code=201)
+    def ingest_scan(body: ScanIn, scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        """Record a scan result. The self-hosted replacement for the
+        storeScanResults function.
+
+        Operator, not approver: recording what a scan found changes no client's
+        resolution, so it is not a disruptive action and gating it behind a
+        human would stop results being stored at three in the morning.
+        """
+        tenant_id, caller = scope
+        require(caller, OPERATOR)
+        return svc.scans.ingest(tenant_id, body.model_dump(), actor=caller.actor)
+
+    @app.get(API_PREFIX + "/tenants/{tenant_id}/scans")
+    def list_scans(limit: int = 50, scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        tenant_id, _ = scope
+        return {"scans": svc.scans.list(tenant_id, limit)}
+
+    @app.get(API_PREFIX + "/tenants/{tenant_id}/scans/{scan_id}")
+    def get_scan(scan_id: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        """One scan. Carries no submitter contact details — those live in their
+        own collection and are fetched deliberately, below."""
+        tenant_id, _ = scope
+        found = svc.scans.get(tenant_id, scan_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="no such scan")
+        return found
+
+    @app.get(API_PREFIX + "/tenants/{tenant_id}/scans/{scan_id}/submitter")
+    def get_submitter(scan_id: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        """Who asked for this scan. Operator role and a route of its own,
+        because reading personal data should be an act rather than a field that
+        arrives with everything else."""
+        tenant_id, caller = scope
+        require(caller, OPERATOR)
+        found = svc.scans.submitter(tenant_id, scan_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="no submitter recorded for this scan")
+        return found
+
+    @app.delete(API_PREFIX + "/tenants/{tenant_id}/scans/{scan_id}/submitter")
+    def purge_submitter(scan_id: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        """Erase the submitter's details, keeping the scan. Audited."""
+        tenant_id, caller = scope
+        require(caller, OPERATOR)
+        return {"purged": svc.scans.purge_submitter(tenant_id, scan_id, caller.actor)}
 
     @app.post(API_PREFIX + "/tenants/{tenant_id}/maintenance")
     def maintenance(scope: tuple = Depends(scoped)) -> dict[str, Any]:

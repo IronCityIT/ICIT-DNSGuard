@@ -53,6 +53,8 @@ currently serving real users. **VERIFIED**.
 | Scan modules (11) | `module_framework/modules/` | **VERIFIED** — see §2.2 |
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
 | SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
+| Scan ingest / retrieval | `dnsguard/scans.py` | **VERIFIED** as code+tests. Replaces `storeScanResults`; **not deployed, not cut over** |
+| Credential registry | `dnsguard/identity.py`, `tools/credential.py` | **VERIFIED** — tenant, actor and roles come from the credential |
 | Scanner entry point | `tools/scan.py` | **VERIFIED** — run live against `ironcityit.com` |
 | Maintenance loop | `tools/maintain.py`, `dnsguard/maintenance.py` | **VERIFIED** — live feed fetch, 304 handling, audit verify |
 | Exposure ratchets | `tools/check-exposure.py`, `tools/check-dns-exposure.py` | **VERIFIED** — both run in CI on every PR |
@@ -150,6 +152,24 @@ nothing new may be built on them.
 ---
 
 ## 4. Data model
+
+### 4.0 Scan records — target shape, already implemented (VERIFIED as code)
+
+`clients/{tenant_id}/scans/{scan_id}` — the report as the pipeline produced it,
+plus `client_id`, `status`, `received_at`, `updated_at`, `completed_at`.
+
+`clients/{tenant_id}/scansubmitters/{scan_id}` — the submitter's contact details,
+**in their own collection**. A scan can then be read, exported into an evidence
+pack and rendered in a dashboard without an email address travelling with it, and
+a deletion request is one document removed rather than history rewritten.
+`purge_submitter` does that and is audited, because "we deleted it" is a claim
+somebody may have to evidence.
+
+Status is monotonic: a failure report never downgrades a completed scan, it
+attaches its error and leaves the findings alone. That behaviour was added to the
+Cloud Function after a run whose scan succeeded and whose analysis failed
+overwrote real findings with an empty failure record — a test holds it down here
+so the migration cannot quietly lose it.
 
 ### 4.1 Control plane — present shape (VERIFIED)
 
@@ -483,7 +503,7 @@ Every Firebase/Firestore/GCP reference in the repository, classified.
 | `.github/workflows/firebase-deploy.yml` | Hosting deploy; has never succeeded | **REMOVE** in Phase 4 |
 | `firebase.json` | Hosting config, CSP + security headers, rewrites | **MIGRATE** — the header/CSP policy is worth keeping; it must be re-expressed for the self-hosted web server |
 | `firestore.rules` | Firestore security rules | **REMOVE** in Phase 4; replaced by API-side authorisation |
-| `cloud-function/index.js` + `package.json` | `triggerDNSScan`, `storeScanResults`, `getScanStatus` | **MIGRATE** — reimplement as the self-hosted ingest/trigger/read API. Contains the only HubSpot integration. |
+| `cloud-function/index.js` + `package.json` | `triggerDNSScan`, `storeScanResults`, `getScanStatus` | **MIGRATE, partly done** — `storeScanResults`/`getScanStatus` are reimplemented in `dnsguard/scans.py` (built, not cut over). Still to move: `triggerDNSScan`, the public unauthenticated read, and the only HubSpot integration in the product. |
 | `.github/workflows/dns-analysis.yml` | `store` and `report-failure` jobs POST to `storeScanResults` | **MIGRATE** — repoint to the ingest API in Phase 3 |
 | `dashboard/public/index.html` | Loads Firebase JS SDK; reads Firestore directly | **MIGRATE** — read through the API instead |
 | `dashboard/public/console.html`, `console.js` | Talks to `*.run.app` / `*.cloudfunctions.net` | **MIGRATE** — repoint to the control-plane API |
@@ -510,9 +530,19 @@ anything is switched, and nothing is deleted until the replacement is proven.**
   asserted as statements and have never been run. **The first connection to a
   real MariaDB is the test that has not happened yet.** The dialect is four
   strings, separated deliberately so that test is cheap.
-- **Phase 2 — self-hosted ingest + read API** on NAS infrastructure, replacing
-  `storeScanResults` and `getScanStatus`, writing MariaDB and NAS volumes.
-  Authenticated; tenant-partitioned from the first row.
+- **Phase 2 — self-hosted ingest + read API**, replacing `storeScanResults` and
+  `getScanStatus`. **BUILT, not cut over** — `dnsguard/scans.py` plus routes on
+  the control-plane API. Authenticated, tenant-partitioned from the first row,
+  writing through `DocumentStore` so it lands in MariaDB once the connection
+  details exist. **VERIFIED** by 34 service tests and 12 HTTP tests. What remains
+  is deployment and the cutover, both of which need infrastructure that does not
+  exist yet.
+
+  **Deliberately not built: an unauthenticated public read.** The free-scan page
+  polls by `scan_id` with no identity, which is exactly the property that leaves
+  the current Firestore open. Replacing it needs a decision — a signed expiring
+  link is the obvious candidate — and inventing one here would rebuild the same
+  hole on new infrastructure.
 - **Phase 3 — cut over.** `dns-analysis.yml` writes to both stores, then to the
   new one only. Dashboard reads through the API. Existing 34 scan documents are
   **exported and imported, then reconciled by count and checksum** before the
@@ -664,6 +694,7 @@ Everything asserted as VERIFIED above traces to one of these.
 | D23 granted all roles and any tenant | Read of `_header_auth` in `dnsguard/api.py` | 2026-09-07 |
 | D23 fixed: tenant/roles/actor come from the credential | `pytest tests/test_identity.py tests/test_api.py` — 33 + 43 passed, including a credential refused when it claims another tenant, a viewer refused an operator route, an operator refused the approval route, and a forged `X-Actor` absent from the audit chain | 2026-09-07 |
 | Credential CLI stores digests only, mode 0600 | `tools/credential.py mint --append`, then inspected the file | 2026-09-07 |
+| Scan ingest keeps status monotonic, partitions by tenant, and keeps the submitter address off the scan | `pytest tests/test_scans.py tests/test_api.py` — 34 + 54 passed | 2026-09-07 |
 | D25 — PEM rule word-split into four fragments | `for p in $patterns` echoed in `sh`, showing the split tokens | 2026-09-07 |
 | D25 — grep rejects a `-`-leading pattern as an option (exit 2, read as "no match") | `grep -rIEn '-----BEGIN' file` → `grep: unrecognized option` | 2026-09-07 |
 | Gate now fires on 9 planted shapes and passes a Firebase Web key | `pytest tests/test_gates.py` — 15 passed | 2026-09-07 |

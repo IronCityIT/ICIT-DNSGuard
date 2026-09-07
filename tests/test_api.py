@@ -637,3 +637,107 @@ def test_maintenance_cannot_be_run_against_another_tenant(services):
     bootstrap(client_for(services))
     intruder = client_for(services, actor="mallory", tenant="globex")
     assert intruder.post("/api/v1/tenants/acme/maintenance").status_code == 403
+
+
+# ── scan ingest: the self-hosted replacement for storeScanResults ────────────
+
+
+def a_report(scan_id="scan-1", status="complete", **extra):
+    return {
+        "product_id": "dnsguard",
+        "scan_id": scan_id,
+        "status": status,
+        "target": "acme.example",
+        "findings": [{"severity": "high", "title": "Missing SPF Record"}],
+        **extra,
+    }
+
+
+def test_a_scan_can_be_ingested_and_read_back(client):
+    created = client.post("/api/v1/tenants/acme/scans", json=a_report())
+    assert created.status_code == 201
+
+    stored = client.get("/api/v1/tenants/acme/scans/scan-1")
+    assert stored.status_code == 200
+    assert stored.json()["status"] == "complete"
+    assert stored.json()["client_id"] == "acme"
+
+
+def test_the_whole_report_survives_the_round_trip(client):
+    """The report is the product's contract with whatever renders it. Ingest
+    adds routing fields; it does not get to decide what a report contains."""
+    client.post(
+        "/api/v1/tenants/acme/scans",
+        json=a_report(executive_summary="Two things need attention.", overall_risk_score=42),
+    )
+    stored = client.get("/api/v1/tenants/acme/scans/scan-1").json()
+    assert stored["executive_summary"] == "Two things need attention."
+    assert stored["overall_risk_score"] == 42
+    assert stored["findings"][0]["title"] == "Missing SPF Record"
+
+
+def test_an_unknown_scan_is_a_404_not_an_empty_document(client):
+    assert client.get("/api/v1/tenants/acme/scans/nope").status_code == 404
+
+
+def test_ingest_needs_the_operator_role(services):
+    reader = client_for(services, roles=["viewer"])
+    assert reader.post("/api/v1/tenants/acme/scans", json=a_report()).status_code == 403
+
+
+def test_a_caller_cannot_ingest_into_another_tenant(services):
+    intruder = client_for(services, tenant="globex")
+    assert intruder.post("/api/v1/tenants/acme/scans", json=a_report()).status_code == 403
+
+
+def test_a_caller_cannot_read_another_tenants_scan(services):
+    client_for(services, tenant="acme").post("/api/v1/tenants/acme/scans", json=a_report())
+    intruder = client_for(services, tenant="globex")
+    assert intruder.get("/api/v1/tenants/acme/scans/scan-1").status_code == 403
+
+
+def test_the_submitters_address_is_not_in_the_scan_response(client):
+    """This endpoint stands where a public one used to. The address must not be
+    a field that simply arrives with everything else."""
+    client.post("/api/v1/tenants/acme/scans", json=a_report(email="someone@acme.example"))
+    stored = client.get("/api/v1/tenants/acme/scans/scan-1")
+    assert "someone@acme.example" not in stored.text
+
+
+def test_the_address_is_reachable_deliberately_and_needs_the_operator_role(services):
+    operator = client_for(services)
+    operator.post("/api/v1/tenants/acme/scans", json=a_report(email="someone@acme.example"))
+
+    assert (
+        operator.get("/api/v1/tenants/acme/scans/scan-1/submitter").json()["email"]
+        == "someone@acme.example"
+    )
+    reader = client_for(services, roles=["viewer"])
+    assert reader.get("/api/v1/tenants/acme/scans/scan-1/submitter").status_code == 403
+
+
+def test_the_address_can_be_purged_over_http_without_losing_the_scan(client):
+    client.post("/api/v1/tenants/acme/scans", json=a_report(email="someone@acme.example"))
+    purged = client.delete("/api/v1/tenants/acme/scans/scan-1/submitter")
+    assert purged.status_code == 200
+    assert purged.json()["purged"] is True
+    assert client.get("/api/v1/tenants/acme/scans/scan-1/submitter").status_code == 404
+    assert client.get("/api/v1/tenants/acme/scans/scan-1").json()["findings"]
+
+
+def test_a_failure_report_does_not_wipe_a_completed_scan_over_http(client):
+    client.post("/api/v1/tenants/acme/scans", json=a_report())
+    client.post(
+        "/api/v1/tenants/acme/scans",
+        json=a_report(status="failed", findings=[], error={"stage": "analyze-store"}),
+    )
+    stored = client.get("/api/v1/tenants/acme/scans/scan-1").json()
+    assert stored["status"] == "complete"
+    assert stored["findings"]
+
+
+def test_scans_are_listed_for_the_tenant_only(services):
+    client_for(services, tenant="acme").post("/api/v1/tenants/acme/scans", json=a_report("s-a"))
+    client_for(services, tenant="globex").post("/api/v1/tenants/globex/scans", json=a_report("s-b"))
+    listed = client_for(services, tenant="acme").get("/api/v1/tenants/acme/scans").json()["scans"]
+    assert [s["scan_id"] for s in listed] == ["s-a"]
