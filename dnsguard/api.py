@@ -50,6 +50,7 @@ from .evidence import EvidenceExporter
 from .exceptions_policy import ExceptionService
 from .feeds import FeedFetcher, FeedRegistry
 from .fetcher import HttpFetcher
+from .identity import CredentialRegistry
 from .maintenance import MaintenanceRunner
 from .policy import PolicyService, Rule
 from .resilience import BreakerRegistry, try_call
@@ -250,15 +251,16 @@ def create_app(
     how this product's Firestore ended up world-readable.
     """
     services = services or Services.build()
-    token = os.environ.get("DNSGUARD_API_TOKEN", "")
 
     if authenticate is None:
-        if not allow_anonymous and not token:
+        registry = CredentialRegistry.from_env(os.environ)
+        if not allow_anonymous and not len(registry):
             raise RuntimeError(
-                "DNSGUARD_API_TOKEN is not set. Set it, or pass allow_anonymous=True "
-                "for local development. The API will not start unauthenticated."
+                "No credentials are configured, so the API will not start unauthenticated. "
+                "Set DNSGUARD_CREDENTIALS_FILE, or DNSGUARD_API_TOKEN together with "
+                "DNSGUARD_API_TENANT. Mint a token with tools/credential.py."
             )
-        authenticate = _header_auth(token, allow_anonymous)
+        authenticate = _credential_auth(registry, allow_anonymous)
 
     app = FastAPI(
         title="Iron City DNS Guard control plane",
@@ -320,22 +322,53 @@ def create_app(
     return app
 
 
-def _header_auth(token: str, allow_anonymous: bool) -> Callable[..., Principal]:
+def _credential_auth(
+    registry: CredentialRegistry, allow_anonymous: bool
+) -> Callable[..., Principal]:
+    """Authenticate against the registry, and take the identity from it.
+
+    The tenant, the actor and the roles all come from the credential. Nothing the
+    caller sends decides any of them — which is the fix: the previous
+    implementation read the tenant out of `X-Client-Id` and handed every
+    authenticated caller all three roles, so one token could act as any client
+    and approve its own disruptive changes.
+    """
+
     def authenticate(
         authorization: str | None, client_id: str | None, actor: str | None
     ) -> Principal:
-        if not allow_anonymous:
-            presented = (authorization or "").removeprefix("Bearer ").strip()
-            if not presented or presented != token:
-                raise HTTPException(status_code=401, detail="a valid bearer token is required")
-        if not client_id:
+        if allow_anonymous:
+            # Local development and tests only. Still requires a tenant, because
+            # every route below is tenant-scoped and a principal without one
+            # would be a principal that belongs nowhere.
+            if not client_id:
+                raise HTTPException(
+                    status_code=401, detail="X-Client-Id identifies the tenant and is required"
+                )
+            return Principal(actor=actor or "anonymous", tenant_id=client_id, roles=[VIEWER])
+
+        presented = (authorization or "").removeprefix("Bearer ").strip()
+        credential = registry.authenticate(presented)
+        if credential is None:
+            # One message for an absent, unknown and disabled credential alike:
+            # which of the three it was is not the caller's business.
+            raise HTTPException(status_code=401, detail="a valid bearer token is required")
+
+        # X-Client-Id is still accepted, because existing clients send it — but
+        # it is an assertion to be checked, not an instruction to be obeyed.
+        if client_id and client_id != credential.tenant_id:
             raise HTTPException(
-                status_code=401, detail="X-Client-Id identifies the tenant and is required"
+                status_code=403,
+                detail="this credential does not belong to the tenant named in X-Client-Id",
             )
+
+        # `actor` is deliberately ignored. It was caller-supplied and it lands in
+        # the audit chain, so honouring it meant forgeable attribution on an
+        # append-only log whose entire value is that it can be believed.
         return Principal(
-            actor=actor or "unknown",
-            tenant_id=client_id,
-            roles=[VIEWER, OPERATOR, APPROVER],
+            actor=credential.actor,
+            tenant_id=credential.tenant_id,
+            roles=list(credential.roles),
         )
 
     return authenticate

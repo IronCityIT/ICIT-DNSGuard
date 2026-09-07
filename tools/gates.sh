@@ -181,10 +181,17 @@ glpat-[0-9A-Za-z_-]{20}
     # look only inside .github/workflows/, which is why a literal in a shell
     # script at repo root was invisible to it. The whole tree is searched now.
     # ${NAME:-literal} counts: a default value is still a value in the file.
+    # A name ending _FILE, _PATH or _DIR points at a location, not a value:
+    # DNSGUARD_CREDENTIALS_FILE=credentials.json is the documented way to use
+    # this system, and flagging it would train people to ignore the gate. A
+    # secret actually pasted into such a variable still trips the provider
+    # patterns above.
     if grep -rIEn --exclude-dir=.git --exclude-dir=gate-reports \
             --exclude-dir=node_modules --exclude=gates.sh \
             '(API_KEY|APIKEY|TOKEN|SECRET|SERVICE_ACCOUNT|PASSWORD|PASSWD|CREDENTIAL)[A-Z_]*[[:space:]]*[:=][[:space:]]*[\"'"'"']?[A-Za-z0-9/_+.-]{16,}' \
-            . 2>/dev/null | grep -vE 'DNSGUARD_API_TOKEN|ci-build-token-not-a-real-secret|YOUR_|_HERE|example|placeholder|\$\{?[A-Za-z_]|secrets\.|env\.'; then
+            . 2>/dev/null \
+            | grep -vE '(_FILE|_PATH|_DIR)[[:space:]]*[:=]' \
+            | grep -vE 'DNSGUARD_API_TOKEN|ci-build-token-not-a-real-secret|YOUR_|_HERE|example|placeholder|\$\{?[A-Za-z_]|secrets\.|env\.'; then
         fail "something assigns a secret literal - reference it by name instead"
     fi
     printf 'no committed credentials found\n'

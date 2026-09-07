@@ -153,10 +153,24 @@ python3 tools/scan.py --domain example.com --dry-run   # validate, query nothing
 
 ### The control plane
 ```bash
-# Refuses to start without a token — it will not come up unauthenticated.
-DNSGUARD_API_TOKEN=dev-token DNSGUARD_DATA_DIR=./data \
+# Mint a credential. The token is printed once and stored nowhere; the registry
+# file holds only its digest.
+python3 tools/credential.py mint --tenant acme --actor bill \
+    --roles viewer,operator --append credentials.json
+
+# Approver separately — the approval gate cannot separate duties that one
+# credential holds.
+python3 tools/credential.py mint --tenant acme --actor ann \
+    --roles approver --append credentials.json
+
+# Refuses to start with no credentials configured.
+DNSGUARD_CREDENTIALS_FILE=credentials.json DNSGUARD_DATA_DIR=./data \
   python3 -c "import uvicorn; from dnsguard.api import create_app; uvicorn.run(create_app())"
 ```
+
+A credential binds one token to one tenant, one actor and an explicit set of
+roles, defaulting to `viewer`. The tenant is **not** taken from a request header,
+and `X-Actor` no longer decides who the audit chain records.
 
 ### The maintenance pass
 Feeds go stale, exceptions lapse and alert rules only fire when something

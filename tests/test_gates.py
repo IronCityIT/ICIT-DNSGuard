@@ -127,6 +127,26 @@ def test_a_clean_tree_passes(tmp_path):
     assert "no committed credentials found" in result.stdout
 
 
+def test_a_variable_naming_a_file_is_not_mistaken_for_a_secret(tmp_path):
+    """`DNSGUARD_CREDENTIALS_FILE=credentials.json` is the documented way to run
+    this system. A name ending _FILE, _PATH or _DIR points at a location, not a
+    value, and flagging it would train people to ignore the gate."""
+    content = (
+        "DNSGUARD_CREDENTIALS_FILE=credentials.json\n"
+        "TLS_CERT_PATH=/etc/ssl/certs/dnsguard.pem\n"
+        "DNSGUARD_DATA_DIR=/var/lib/dnsguard/documents\n"
+    )
+    result = run_gate(tmp_path, "run.sh", content)
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_secret_pasted_into_a_file_variable_is_still_caught(tmp_path):
+    """The location exemption must not become a place to hide one. A real key
+    still trips the provider patterns, whatever the variable is called."""
+    result = run_gate(tmp_path, "run.sh", f"API_KEY_FILE={GOOGLE_KEY}\n")
+    assert result.returncode != 0
+
+
 def test_a_named_reference_is_not_mistaken_for_a_literal(tmp_path):
     """Referencing a secret by name is the practice the gate exists to enforce.
     Flagging it would punish exactly the thing it is asking for."""
