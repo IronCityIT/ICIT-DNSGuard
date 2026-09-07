@@ -257,3 +257,56 @@ def test_browser_storage_access_is_guarded(console_js):
     """localStorage throws outright in browsers configured to block site data."""
     for block in re.findall(r"localStorage[\s\S]{0,200}", console_js):
         assert "try" in console_js[: console_js.index(block) + len(block)]
+
+
+# ── the client page shows what the report actually carries ───────────────────
+
+
+def test_the_findings_table_has_an_affected_column(index):
+    """Several findings all reading as the scanned domain is not something a
+    reader can act on. The specific host is the first thing they need."""
+    head = re.search(r"<thead><tr>(.*?)</tr></thead>", index, re.S)
+    assert head, "the findings table lost its header"
+    assert "Affected" in head.group(1)
+
+
+def test_the_placeholder_rows_match_the_column_count(index):
+    """The static rows are what a visitor sees before the fetch resolves. A row
+    narrower than the header renders as a broken table."""
+    head = re.search(r"<thead><tr>(.*?)</tr></thead>", index, re.S).group(1)
+    columns = len(re.findall(r"<th>", head))
+    body = re.search(r'<tbody id="findings-body">(.*?)</tbody>', index, re.S).group(1)
+    for row in re.findall(r"<tr>(.*?)</tr>", body, re.S):
+        assert len(re.findall(r"<td>", row)) == columns
+
+
+def test_an_unconfirmed_finding_is_labelled_as_such(index):
+    """A check that could not complete must not render like one that proved
+    something. This is the same distinction the report contract carries, one
+    layer up — and the layer the client actually reads."""
+    js = inline_js(INDEX)
+    assert "confidence" in js
+    assert "confidence-tag" in js
+    assert "!== 'confirmed'" in js or '!== "confirmed"' in js
+
+
+def test_the_confidence_tag_has_a_visible_style(index):
+    assert ".confidence-tag" in index
+
+
+def test_the_affected_host_and_confidence_are_set_as_text_not_markup(index):
+    """Both new values come from a Firestore document. They must be built the
+    same way every other value on this page is — as text — or the stored-XSS fix
+    is undone by the columns added after it."""
+    js = inline_js(INDEX)
+    for line in js.splitlines():
+        if "confidence-tag" in line or "affected-host" in line:
+            assert ".innerHTML" not in line, line
+    assert "tag.textContent" in js
+
+
+def test_every_severity_the_report_can_emit_has_a_pill_style(index):
+    """A severity with no style renders as unstyled text next to styled peers,
+    which reads as a rendering fault rather than as a finding."""
+    for severity in ("critical", "high", "medium", "low", "info"):
+        assert f".severity-pill.{severity}" in index, severity
