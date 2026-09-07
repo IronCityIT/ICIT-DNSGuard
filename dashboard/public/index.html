@@ -157,6 +157,10 @@
         .severity-pill.high { background: var(--high); color: #fff; }
         .severity-pill.medium { background: var(--medium); color: #000; }
         .severity-pill.low { background: var(--low); color: #000; }
+        .severity-pill.info { background: var(--border); color: var(--text-muted); }
+        /* An unproven finding must not read like a proven one. */
+        .confidence-tag { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 10px; font-size: 0.65rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; background: transparent; color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+        .affected-host { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; color: var(--text-muted); word-break: break-all; }
         
         .cta-box { background: linear-gradient(135deg, var(--gold-dark), var(--gold)); border-radius: 12px; padding: 35px; text-align: center; margin-top: 30px; }
         .cta-box h3 { font-size: 1.4rem; color: #000; margin-bottom: 10px; }
@@ -295,11 +299,11 @@
             <div class="card">
                 <div class="card-header"><div class="card-title">⚠️ Security Findings</div></div>
                 <table class="findings-table">
-                    <thead><tr><th>Severity</th><th>Category</th><th>Finding</th><th>Recommendation</th></tr></thead>
+                    <thead><tr><th>Severity</th><th>Category</th><th>Affected</th><th>Finding</th><th>Recommendation</th></tr></thead>
                     <tbody id="findings-body">
-                        <tr><td><span class="severity-pill high">HIGH</span></td><td>Email Security</td><td>Missing SPF Record</td><td>Implement SPF/DKIM/DMARC</td></tr>
-                        <tr><td><span class="severity-pill high">HIGH</span></td><td>Email Security</td><td>No DKIM Configured</td><td>Implement SPF/DKIM/DMARC</td></tr>
-                        <tr><td><span class="severity-pill medium">MEDIUM</span></td><td>DNSSEC</td><td>Not Implemented</td><td>Enable DNSSEC</td></tr>
+                        <tr><td><span class="severity-pill high">HIGH</span></td><td>Email Security</td><td>&mdash;</td><td>Missing SPF Record</td><td>Implement SPF/DKIM/DMARC</td></tr>
+                        <tr><td><span class="severity-pill high">HIGH</span></td><td>Email Security</td><td>&mdash;</td><td>No DKIM Configured</td><td>Implement SPF/DKIM/DMARC</td></tr>
+                        <tr><td><span class="severity-pill medium">MEDIUM</span></td><td>DNSSEC</td><td>&mdash;</td><td>Not Implemented</td><td>Enable DNSSEC</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -501,12 +505,34 @@
                 }
                 return td;
             };
+            const scanned = String(data.domain || '').toLowerCase();
             findings.forEach(f => {
                 const severity = String(f.severity || 'medium').toLowerCase();
                 const row = document.createElement('tr');
                 row.appendChild(cell(severity.toUpperCase(), 'severity-pill ' + severity));
                 row.appendChild(cell(f.category || 'General'));
-                row.appendChild(cell(f.title || f.finding || 'Finding'));
+
+                // The specific host, when it is narrower than the domain scanned.
+                // Several findings all reading as the domain is not something a
+                // reader can act on.
+                const asset = String(f.asset || '').toLowerCase();
+                row.appendChild(cell(asset && asset !== scanned ? f.asset : '\u2014',
+                                     asset && asset !== scanned ? 'affected-host' : ''));
+
+                // A check that could not complete must not render like one that
+                // proved something. Anything short of confirmed is labelled.
+                const titleCell = document.createElement('td');
+                titleCell.textContent = f.title || f.finding || 'Finding';
+                const confidence = String(f.confidence || 'confirmed').toLowerCase();
+                if (confidence && confidence !== 'confirmed') {
+                    const tag = document.createElement('span');
+                    tag.className = 'confidence-tag';
+                    tag.textContent = confidence;
+                    tag.title = 'This finding is reported as ' + confidence + ' \u2014 it has not been confirmed.';
+                    titleCell.appendChild(tag);
+                }
+                row.appendChild(titleCell);
+
                 row.appendChild(cell(f.remediation || 'Review configuration'));
                 tbody.appendChild(row);
             });

@@ -575,3 +575,60 @@ against. So: reported always, fatal only when asked.
 `FIREBASE_SERVICE_ACCOUNT` still absent; nothing deployed. The live Firestore
 enumeration is still open. **`vpn.ironcityit.com` is still live and still
 claimable** — one DNS change: delete the record, or re-claim the destination.
+
+---
+
+# Client-facing fidelity — 2026-09-06
+
+**Branch:** `productize/dnsguard-client-fidelity` · **Base:** `main` (at
+`b16e041`, PR #11 merged).
+
+The report contract now carries `asset` and `confidence`. The page a client
+actually reads carried neither. Fixing the contract and leaving the page alone
+means the honesty stops one layer short of the only reader who matters.
+
+## D22 — an unproven finding rendered identically to a proven one
+
+The free-scan findings table showed Severity, Category, Finding and
+Recommendation. Two consequences, both on the client-facing surface:
+
+* **No affected host.** Three takeover findings on three different hostnames all
+  displayed as the scanned domain. The single most useful fact — *which* host —
+  was in the document and not on the page.
+* **No confidence.** `alias_takeover` deliberately reports `inconclusive` when the
+  resolver could not be trusted and `possible` when discovery covered a reduced
+  surface. All of it rendered exactly like a confirmed critical. The care taken
+  to be honest about proof was invisible at the point of delivery.
+
+**Fixed.** An `Affected` column shows the specific host, and an em-dash where the
+finding is about the domain itself rather than a host under it. Anything short of
+`confirmed` gets a labelled tag with a hover explanation.
+
+Built with `textContent` and `createElement`, like everything else on this page —
+both new values come from a Firestore document, so a column added carelessly
+would undo the stored-XSS fix that closed D1. A test asserts that neither new
+cell is ever built with `innerHTML`.
+
+Also fixed: `info` had no severity-pill style, so an informational finding
+rendered as unstyled text beside styled peers — which reads as a rendering fault
+rather than as a finding.
+
+## PROVEN — verified this run
+
+| Check | Result |
+|---|---|
+| Gates | ✅ all eleven green |
+| Inline JS parses | ✅ `node --check` |
+| Render output | ✅ driven through a DOM shim with three findings: affected host shown, em-dash for the domain-level one, `inconclusive` tag on the unproven one |
+| No new XSS surface | ✅ asserted by test — neither new cell uses `innerHTML` |
+| Placeholder rows | ✅ asserted to match the header's column count, so the pre-fetch view is not a broken table |
+
+## Not deployed
+
+`FIREBASE_SERVICE_ACCOUNT` is still absent, so this change sits in `main`
+unpublished along with every other dashboard fix since D1. The live site keeps
+serving the last hand-deployed build. That blocker is unchanged and was
+re-verified this session: no `gcloud` or `firebase` CLI, no application-default
+credentials, secret not on the repository.
+
+**`vpn.ironcityit.com` is still live and still claimable.**
