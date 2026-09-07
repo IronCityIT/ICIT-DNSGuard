@@ -7,8 +7,15 @@ cli.py — the CLI-first entry point (access gate lives here).
   python -m module_framework.cli --group standard  --targets https://app.example.com \
       --client acme --scan-id 2026-07-08-01
 
-Output is JSON on stdout — this is what gets POSTed to consensus-engine and then
-the storeScanResults Cloud Function. Same JSON contract for every tool.
+Output is JSON on stdout. Same contract for every tool in the fleet.
+
+This is the MULTI-TARGET entry point: it accepts IPs, CIDRs, URLs, domains,
+hostnames and files, via targets.py. `tools/scan.py` is the single-domain one,
+and is what the scan workflow invokes — an earlier version of this docstring
+claimed the workflow ran *this* file, which was never true and would send anybody
+debugging a live scan to the wrong place. It also named the storeScanResults
+Cloud Function as the destination; that platform is retired from the target
+architecture, and where results go is not this file's business.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ for _path in (str(_HERE), str(_HERE.parent)):
         sys.path.insert(0, _path)
 
 import registry  # noqa: E402
+from base import AssetSink  # noqa: E402
 from targets import parse_targets  # noqa: E402
 
 
@@ -91,7 +99,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"selection error: {e}", file=sys.stderr)
         return 2
 
-    ctx = {"client": args.client, "scan_id": args.scan_id}
+    # One sink for the whole run, so two modules finding the same host produce
+    # one inventory entry carrying what each learned rather than two partial ones.
+    assets = AssetSink()
+    ctx = {"client": args.client, "scan_id": args.scan_id, "assets": assets}
     findings: list[dict] = []
     # THE GUARD. m.run() is the only place a module touches the network, so a dry
     # run stops exactly here — after targets and selection have been validated for
@@ -120,6 +131,9 @@ def main(argv: list[str] | None = None) -> int:
                 "target_count": len(targets),
                 "dry_run": args.dry_run,
                 "findings": findings,
+                # What of the client's is on the internet. A deliverable in its
+                # own right, not something to reconstruct from the findings.
+                "assets": assets.to_list(),
             },
             indent=2,
         )
