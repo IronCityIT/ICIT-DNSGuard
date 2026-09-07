@@ -70,6 +70,7 @@ def build(
     modules_run: builtins.list[str] | None = None,
     duration_seconds: float = 0.0,
     errors: builtins.list[str] | None = None,
+    assets: builtins.list[dict[str, Any]] | None = None,
     clock: Clock | None = None,
 ) -> dict[str, Any]:
     clock = clock or Clock()
@@ -98,6 +99,11 @@ def build(
         # ── additive ───────────────────────────────────────────────────────
         "modules_run": modules_run or posture.modules_run,
         "posture": posture.to_dict(),
+        # What of the client's is on the internet. A deliverable in its own
+        # right — "here is your external surface" is a question clients ask
+        # directly — so it is modelled separately rather than reverse-engineered
+        # out of findings by whatever renders the report.
+        "assets": assets or [],
         "errors": errors or [],
     }
     return report

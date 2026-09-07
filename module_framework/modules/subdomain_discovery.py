@@ -11,7 +11,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from base import Finding, ScanModule
+from base import Asset, Finding, ScanModule, sink_from
 
 from ._dns import host_of, make_resolver, query
 
@@ -210,6 +210,25 @@ class SubdomainDiscovery(ScanModule):
 
         with ThreadPoolExecutor(max_workers=int(ctx.get("workers", 10))) as pool:
             live = [r for r in pool.map(resolve, sorted(candidates)) if r]
+
+        # The inventory is a deliverable, not a by-product of findings: a client
+        # asking "what of ours is on the internet" should not have to have it
+        # reconstructed from a list of problems.
+        sink = sink_from(ctx)
+        for entry in live:
+            sink.add(
+                Asset(
+                    kind="host",
+                    value=entry["host"],
+                    source=self.name,
+                    target=host,
+                    attributes={
+                        "addresses": entry["addresses"],
+                        "aliases": entry["aliases"],
+                        "discovered_by": entry["source"],
+                    },
+                )
+            )
 
         findings: list[Finding] = []
         sensitive = [h for h in live if h["label"] in SENSITIVE_NAMES]

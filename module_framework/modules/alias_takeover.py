@@ -56,7 +56,7 @@ import secrets
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from base import Finding, ScanModule
+from base import Asset, Finding, ScanModule, sink_from
 
 from ._dns import host_of, make_resolver, query, resolution, zone_apex
 from .subdomain_discovery import (
@@ -229,6 +229,24 @@ class AliasTakeover(ScanModule):
             self._verdict(res, fqdn, destination, root, cache) for fqdn, destination in aliases
         ]
         findings = [f for f in (self._finding(v, root) for v in verdicts) if f]
+
+        sink = sink_from(ctx)
+        for verdict in verdicts:
+            sink.add(
+                Asset(
+                    kind="host",
+                    value=verdict["host"],
+                    source=self.name,
+                    target=root,
+                    # Merged with whatever discovery already recorded for this
+                    # host, so the inventory says both that it exists and where
+                    # its alias leads.
+                    attributes={
+                        "alias_destination": verdict["destination"],
+                        "alias_verdict": verdict["verdict"],
+                    },
+                )
+            )
 
         exposed = [v for v in verdicts if v["verdict"] != "resolves"]
         findings.append(

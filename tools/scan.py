@@ -27,6 +27,7 @@ for path in (str(ROOT), str(ROOT / "module_framework")):
         sys.path.insert(0, path)
 
 import registry  # noqa: E402
+from base import AssetSink  # noqa: E402
 from targets import parse_targets  # noqa: E402
 
 from dnsguard.report import build, make_scan_id  # noqa: E402
@@ -102,7 +103,11 @@ def main(argv: list[str] | None = None) -> int:
     started = time.perf_counter()
     findings: list[Any] = []
     errors: list[str] = []
-    ctx: dict[str, Any] = {"client": args.client, "scan_id": scan_id}
+    # One sink for the whole scan, so two modules finding the same host produce
+    # one inventory entry carrying what each of them learned rather than two
+    # partial ones.
+    assets = AssetSink()
+    ctx: dict[str, Any] = {"client": args.client, "scan_id": scan_id, "assets": assets}
     if args.nameservers:
         ctx["nameservers"] = [ns.strip() for ns in args.nameservers.split(",") if ns.strip()]
 
@@ -128,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         modules_run=[m.name for m in selected],
         duration_seconds=time.perf_counter() - started,
         errors=errors,
+        assets=assets.to_list(),
     )
     report["dry_run"] = args.dry_run
 

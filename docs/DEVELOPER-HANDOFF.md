@@ -51,6 +51,7 @@ currently serving real users. **VERIFIED**.
 |---|---|---|
 | Scan framework | `module_framework/` | **VERIFIED** — `base.py` (Finding/Asset/ScanModule contracts), `registry.py` (discovery, groups), `targets.py` (ip/cidr/url/domain/hostname/file), `cli.py` |
 | Scan modules (11) | `module_framework/modules/` | **VERIFIED** — see §2.2 |
+| Asset inventory | `AssetSink` in `base.py`, populated by the discovery modules | **VERIFIED** — 20 assets on a live domain, 7 merged across two modules |
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
 | SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
 | Web security policy | `deploy/web-headers.json`, `tools/render-headers.py` | **VERIFIED** — portable, renders to Caddy/nginx, parity with `firebase.json` enforced by test |
@@ -672,11 +673,17 @@ Ordered by value, nonblocked first.
 6. **Surface change detection to a client.** `dnsguard/diff.py` computes it and
    `GET /scans/{id}/changes` serves it, but no page renders it yet — and "is it
    getting better or worse" is the question the client is actually paying for.
-7. **`AssetSink` is dead code** — `module_framework/base.py` defines a
-   deduplicating inventory sink, `tools/scan.py` never creates one and no module
-   uses it. Either wire it up or remove it.
-8. **Coverage gaps**: `module_framework/cli.py` 0%, `network_path` 33%,
-   `resolver_performance` 33%, `transport_security_audit` 42%.
+7. **Coverage gaps**: `network_path` 33%, `resolver_performance` 33%,
+   `transport_security_audit` 42%. All three reach the network, which is why
+   they are thin — testing them properly means injecting their transports the
+   way `feeds`/`fetcher` already do.
+
+   **Correction:** `module_framework/cli.py` was previously listed here at 0%.
+   That number is a measurement artifact — it *is* tested, by subprocess in
+   `tests/test_catalog.py`, and coverage.py does not follow a subprocess. It is
+   also not dead: it is the multi-target entry point (IP, CIDR, URL, domain,
+   hostname, file) that the architecture requires, while `tools/scan.py` is the
+   single-domain one the workflow invokes.
 9. **Rate limiting** on the public trigger endpoint — currently **UNKNOWN**.
 
 ---
@@ -707,6 +714,8 @@ Everything asserted as VERIFIED above traces to one of these.
 | Scan ingest keeps status monotonic, partitions by tenant, and keeps the submitter address off the scan | `pytest tests/test_scans.py tests/test_api.py` — 34 + 54 passed | 2026-09-07 |
 | Container starts, serves, and refuses to start unauthenticated | CI `Container smoke test` step, run `34166736024`: `refuses to start unauthenticated... refused` / `starting the container... up` / `/readyz... ready` / `does not run as root... uid 10001` | 2026-09-07 |
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
+| Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
+| `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
 | Change detection against **real** data | Two genuine `ironcityit.com` reports (one taken on a resolver that could not confirm, one on a conformant resolver) ingested and compared: `regressed: True`, the critical takeover reported `new`, the inconclusive placeholder `resolved`, audit chain valid | 2026-09-07 |
 | D25 — PEM rule word-split into four fragments | `for p in $patterns` echoed in `sh`, showing the split tokens | 2026-09-07 |
 | D25 — grep rejects a `-`-leading pattern as an option (exit 2, read as "no match") | `grep -rIEn '-----BEGIN' file` → `grep: unrecognized option` | 2026-09-07 |
