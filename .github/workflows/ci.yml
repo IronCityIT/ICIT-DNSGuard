@@ -99,7 +99,9 @@ jobs:
   exposure:
     name: Live exposure has not regressed
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Two probes now, one of which sweeps DNS for every conventional hostname
+    # under our domains. Still fast, but not five-minutes-flat fast.
+    timeout-minutes: 10
     # Separate from the gates job on purpose. It reaches the public internet,
     # which every other gate deliberately does not, and it answers a different
     # question: not "is this change correct" but "is the boundary these projects
@@ -125,11 +127,37 @@ jobs:
           python3 tools/check-exposure.py --baseline exposure-baseline.json --all --json \
             > gate-reports/exposure.json || true
 
+      - name: Install the runtime dependencies
+        if: always()
+        # The DNS check runs the product's own scan module, so it needs what the
+        # product needs. Pinned in requirements.txt rather than named here, so
+        # this cannot drift from what a scan actually runs with.
+        run: python3 -m pip install --quiet -r requirements.txt
+
+      - name: Compare our own DNS aliases against the recorded baseline
+        if: always()
+        # The other half of the same question, for the other live boundary this
+        # product can measure: are the aliases published under our own domains
+        # still what we recorded, or has one become claimable by somebody else.
+        # Read-only DNS. Exit 1 is a regression, exit 2 means the resolver could
+        # not be trusted and nothing was verified — which is not a pass.
+        run: python3 tools/check-dns-exposure.py --baseline dns-baseline.json
+
+      - name: Record the DNS comparison
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p gate-reports
+          python3 tools/check-dns-exposure.py --baseline dns-baseline.json --json \
+            > gate-reports/dns-exposure.json || true
+
       - name: Upload the comparison
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: exposure-comparison
-          path: gate-reports/exposure.json
+          path: |
+            gate-reports/exposure.json
+            gate-reports/dns-exposure.json
           retention-days: 14
           if-no-files-found: warn

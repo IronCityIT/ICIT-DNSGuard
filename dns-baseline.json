@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "What the aliases published under our own domains were verified to be, and why each is recorded.",
+    "Checked by tools/check-dns-exposure.py --baseline dns-baseline.json, which runs this product's",
+    "own alias_takeover module and fails only on a regression: an alias worse than the one recorded",
+    "here, or a new bad one that was not. The known-and-recorded state does not fail the build,",
+    "because a permanently red gate for a reason the author of an unrelated pull request cannot act",
+    "on is a gate people learn to click past.",
+    "",
+    "Postures, best to worst:",
+    "  resolves             the destination resolves to an address",
+    "  no_address           the destination exists but publishes no address record",
+    "  dangling             the destination does not exist; whether it is claimable is unproven",
+    "  claimable_service    the destination does not exist and its parent hands out names on request",
+    "  unregistered_domain  no part of the destination is registered; the domain itself is available",
+    "",
+    "A verdict of 'unresolved' is none of these. It means the resolver's negative answers could not",
+    "be trusted, so nothing was measured — the check reports that and exits 2 rather than passing.",
+    "",
+    "Only aliases worth recording are listed. An alias whose destination resolves is the normal case",
+    "and is not enumerated here; the check treats an unlisted alias as expected-to-resolve, so a new",
+    "alias that does NOT resolve fails the gate the first time it appears. That is the point.",
+    "",
+    "Tighten an entry the moment its record improves — an improvement is reported, not silently",
+    "accepted, precisely so the gain gets held."
+  ],
+  "verified_at": "2026-09-06",
+  "verified_by": "tools/check-dns-exposure.py --nameservers 1.1.1.1,8.8.8.8, read-only DNS",
+  "domains": [
+    {
+      "domain": "ironcityit.com",
+      "aliases": [
+        {
+          "host": "vpn.ironcityit.com",
+          "destination": "icit.mynetgear.com",
+          "verdict": "claimable_service",
+          "note": [
+            "LIVE AND OPEN. The destination is NXDOMAIN and its parent mynetgear.com is served by",
+            "ns2.no-ip.com, a self-service dynamic-DNS provider where an unregistered name is claimed",
+            "by whoever asks for it first. Whoever claims 'icit' there controls what vpn.ironcityit.com",
+            "answers — on a hostname staff and clients are taught to trust, with a certificate that",
+            "would validate.",
+            "",
+            "Recorded rather than fixed because the fix is a DNS change on ironcityit.com, which is not",
+            "this repository's to make and needs a person: delete the record, or re-claim the",
+            "destination. Deleting is the safer order.",
+            "",
+            "It is recorded at its true severity so that the gate is honest about the starting point",
+            "and still fires if it gets worse, or if a second one appears."
+          ]
+        }
+      ]
+    }
+  ]
+}

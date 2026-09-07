@@ -441,3 +441,74 @@ recorded earlier is still open.
 **`vpn.ironcityit.com` is still live and still claimable.** The product can now
 find it on its own, which does not fix it. One DNS change: delete the record, or
 re-claim the destination.
+
+---
+
+# DNS exposure ratchet — 2026-09-06
+
+**Branch:** `productize/dnsguard-finding-fidelity` · **Base:** `main` (at
+`0c6ee13`, PR #9 merged).
+
+The previous run gave the product the ability to find a claimable takeover on
+its own. Nothing re-checked it. A finding recorded in a document decays into
+folklore — this repository has already demonstrated that, by confidently
+describing a production security boundary and being wrong about it for a
+fortnight. So the alias posture gets the same treatment the Firestore posture
+already has: a recorded baseline that CI compares against reality.
+
+## What was added
+
+| File | What it is |
+|---|---|
+| `dnsguard/dns_exposure.py` | The comparison. Postures ranked best-to-worst; only a posture *worse* than the record fails |
+| `tools/check-dns-exposure.py` | `python3 tools/check-dns-exposure.py --baseline dns-baseline.json`. Runs the product's own `alias_takeover` module against our domains |
+| `dns-baseline.json` | What each alias was verified to be, and why — including the still-open `vpn.ironcityit.com`, recorded at its true severity |
+| CI job step | Runs on every PR, in the existing `Live exposure has not regressed` job |
+| `tests/test_dns_exposure.py` | 21 tests |
+
+## Three exit codes, because they need three different responses
+
+| Code | Meaning |
+|---|---|
+| 0 | Every alias is as recorded, or better |
+| 1 | An alias is **worse** than recorded, or a new bad one appeared |
+| 2 | **Nothing could be verified** — the resolver's negative answers could not be trusted |
+
+Exit 2 is the one worth arguing for. A check that could not measure anything and
+reports a pass is precisely the false reassurance this ratchet exists to prevent,
+so "unverified" is its own outcome rather than being folded into either a pass or
+a regression. `unresolved` is deliberately not a rung on the posture ladder: it
+is the absence of a measurement, and comparing it against a recorded rung would
+either invent a regression or hide one.
+
+An unlisted alias is treated as expected-to-resolve, so a **new** dangling alias
+fails the gate the first time it appears. That is the point of the file.
+
+## PROVEN — verified this run
+
+| Check | Command | Result |
+|---|---|---|
+| Regression is detected | `--domain ironcityit.com --nameservers 1.1.1.1,8.8.8.8` with no baseline | ✅ exit **1**, `vpn.ironcityit.com` reported `claimable_service` |
+| An untrustworthy resolver does not pass | same, on the sandbox's own resolver | ✅ exit **2**, "This is not a pass" |
+| The recorded state holds green | `--baseline dns-baseline.json --nameservers 1.1.1.1,8.8.8.8` | ✅ exit **0**, and still prints `still open: vpn.ironcityit.com` |
+| Gates | all eleven | ✅ green |
+
+Green, and still honest — the pass output names the open finding rather than
+hiding it behind a zero exit.
+
+## Why the known-bad state does not fail the build
+
+Same policy as `exposure-baseline.json`, for the same reason written there: a
+gate that is permanently red for a condition the author of an unrelated pull
+request cannot fix is a gate people learn to click past, and then it catches
+nothing. The open takeover is recorded at its true severity so the gate is honest
+about where it starts and still fires if it worsens or a second one appears. An
+improvement is reported with a prompt to tighten the file, so a gain that was
+actually made gets held.
+
+## Unchanged
+
+`FIREBASE_SERVICE_ACCOUNT` still absent; nothing deployed. The live Firestore
+enumeration is still open. **`vpn.ironcityit.com` is still live and still
+claimable** — now continuously monitored, which is not the same as fixed. One DNS
+change: delete the record, or re-claim the destination.
