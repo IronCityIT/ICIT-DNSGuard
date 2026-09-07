@@ -53,6 +53,7 @@ currently serving real users. **VERIFIED**.
 | Scan modules (11) | `module_framework/modules/` | **VERIFIED** — see §2.2 |
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
 | SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
+| Web security policy | `deploy/web-headers.json`, `tools/render-headers.py` | **VERIFIED** — portable, renders to Caddy/nginx, parity with `firebase.json` enforced by test |
 | Scan ingest / retrieval | `dnsguard/scans.py` | **VERIFIED** as code+tests. Replaces `storeScanResults`; **not deployed, not cut over** |
 | Change detection | `dnsguard/diff.py` | **VERIFIED** — new / resolved / worsened / improved / unchanged between two scans of the same target |
 | Credential registry | `dnsguard/identity.py`, `tools/credential.py` | **VERIFIED** — tenant, actor and roles come from the credential |
@@ -508,7 +509,7 @@ Every Firebase/Firestore/GCP reference in the repository, classified.
 |---|---|---|
 | `deploy.sh` | Manual Cloud Shell script: deploys 3 Cloud Functions + Firebase Hosting. Also held D24. | **REMOVE** — done in this change |
 | `.github/workflows/firebase-deploy.yml` | Hosting deploy; has never succeeded | **REMOVE** in Phase 4 |
-| `firebase.json` | Hosting config, CSP + security headers, rewrites | **MIGRATE** — the header/CSP policy is worth keeping; it must be re-expressed for the self-hosted web server |
+| `firebase.json` | Hosting config, CSP + security headers, rewrites | **MIGRATE, done for the part that matters** — the header/CSP policy now lives in `deploy/web-headers.json`, with `tools/render-headers.py` emitting Caddy and nginx snippets and a test asserting the two files still agree. The rewrites remain Firebase-specific and go in phase 4. |
 | `firestore.rules` | Firestore security rules | **REMOVE** in Phase 4; replaced by API-side authorisation |
 | `cloud-function/index.js` + `package.json` | `triggerDNSScan`, `storeScanResults`, `getScanStatus` | **MIGRATE, partly done** — `storeScanResults`/`getScanStatus` are reimplemented in `dnsguard/scans.py` (built, not cut over). Still to move: `triggerDNSScan`, the public unauthenticated read, and the only HubSpot integration in the product. |
 | `.github/workflows/dns-analysis.yml` | `store` and `report-failure` jobs POST to `storeScanResults` | **MIGRATE** — repoint to the ingest API in Phase 3 |
@@ -704,6 +705,8 @@ Everything asserted as VERIFIED above traces to one of these.
 | D23 fixed: tenant/roles/actor come from the credential | `pytest tests/test_identity.py tests/test_api.py` — 33 + 43 passed, including a credential refused when it claims another tenant, a viewer refused an operator route, an operator refused the approval route, and a forged `X-Actor` absent from the audit chain | 2026-09-07 |
 | Credential CLI stores digests only, mode 0600 | `tools/credential.py mint --append`, then inspected the file | 2026-09-07 |
 | Scan ingest keeps status monotonic, partitions by tenant, and keeps the submitter address off the scan | `pytest tests/test_scans.py tests/test_api.py` — 34 + 54 passed | 2026-09-07 |
+| Container starts, serves, and refuses to start unauthenticated | CI `Container smoke test` step, run `34166736024`: `refuses to start unauthenticated... refused` / `starting the container... up` / `/readyz... ready` / `does not run as root... uid 10001` | 2026-09-07 |
+| Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Change detection against **real** data | Two genuine `ironcityit.com` reports (one taken on a resolver that could not confirm, one on a conformant resolver) ingested and compared: `regressed: True`, the critical takeover reported `new`, the inconclusive placeholder `resolved`, audit chain valid | 2026-09-07 |
 | D25 — PEM rule word-split into four fragments | `for p in $patterns` echoed in `sh`, showing the split tokens | 2026-09-07 |
 | D25 — grep rejects a `-`-leading pattern as an option (exit 2, read as "no match") | `grep -rIEn '-----BEGIN' file` → `grep: unrecognized option` | 2026-09-07 |

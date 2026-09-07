@@ -1,5 +1,23 @@
 # DNS Guard — STATUS
 
+> ## Read `docs/DEVELOPER-HANDOFF.md` first
+>
+> **This file is a running log of what each session did. It is not the
+> architecture.** Everything below the first heading was written before Firebase
+> was retired from the ICIT target architecture, and it describes Firestore,
+> Firebase Hosting and GCP Cloud Functions as though they were the destination.
+> They are the *current* implementation of the free-scan funnel and nothing more.
+>
+> `docs/DEVELOPER-HANDOFF.md` is the source of truth for architecture, data
+> model, security boundaries, secrets, blockers and evidence. Every claim in it
+> is labelled **VERIFIED**, **TARGET** or **UNKNOWN**.
+>
+> Earlier entries are left as written rather than edited, because this repository
+> has twice recorded a production security claim that turned out to be false, and
+> the record of having been wrong is worth more than a tidy document. Corrections
+> are appended, not applied in place.
+
+
 **Run:** 2026-09-04 · **Branch:** `productize/dnsguard-policy-platform` · **Base:** `main`
 **Tier:** IN SCOPE (full autonomy: branch → PR → merge → deploy to `icit-dnsguard`).
 **Scope of this run:** productize DNS Guard from a single-domain assessment script
@@ -632,3 +650,63 @@ re-verified this session: no `gcloud` or `firebase` CLI, no application-default
 credentials, secret not on the repository.
 
 **`vpn.ironcityit.com` is still live and still claimable.**
+
+
+---
+
+# Firebase retirement, and seven changes — 2026-09-07
+
+**Directive:** Firebase, Firestore, Firebase Hosting and GCP-managed product
+storage are **retired** from the ICIT target architecture. GitHub Actions remains
+the execution layer. Persistent state moves to self-hosted, NAS-backed
+infrastructure — MariaDB for relational state, NAS volumes for artifacts.
+
+`docs/DEVELOPER-HANDOFF.md` was written first, from a full re-read of the
+repository rather than from these notes, and is now the source of truth. It found
+the fact the whole migration turns on: **the Python control plane has no
+Firestore dependency at all.** `DocumentStore` was already an abstraction over
+memory and the filesystem, so this goes through a seam that already existed.
+
+## Merged this session
+
+| PR | What | Evidence |
+|---|---|---|
+| #12 | Client page shows the affected host and labels unproven findings | Render driven through a DOM shim |
+| #13 | Developer handoff; **D24** committed credential removed; **D25** secrets gate fixed | Gate behaviour proven by 15 tests |
+| #14 | SQL document store (Phase 1) | Whole store contract run against a real engine |
+| #15 | **D23** fixed — credentials bind a token to one tenant and explicit roles | Forged `X-Actor` absent from the audit chain |
+| #16 | Scan ingest (Phase 2), tenant-partitioned | Monotonic status and PII separation asserted |
+| #17 | Change detection between scans | Verified against two **real** `ironcityit.com` reports |
+| #18 | Container smoke test | The image starts, refuses to start unauthenticated, runs as uid 10001 |
+
+## Defects found and fixed
+
+| # | Severity | Defect |
+|---|---|---|
+| **D23** | High | One shared token could act as **any tenant** in **every role**, approver included — the tenant came from a request header |
+| **D24** | High | A live-format HubSpot token was committed in `deploy.sh` from January. **Rotation is still outstanding and needs a person** |
+| **D25** | High | The secrets gate's private-key rule had **never run** — word-split, then rejected by grep as an option, then silently skipped. A committed PEM key would have passed |
+| — | Medium | The shell gate checked one file by name, so a second script escaped it entirely |
+| — | Medium | Two scans ingested in the same second each had no predecessor, so change detection silently reported a baseline |
+
+## Corrections to earlier entries in this file
+
+* **The Docker image had never been built** — wrong. It builds on every CI run;
+  found by reading a CI log rather than repeating the note. What was genuinely
+  missing was ever *starting* it, which PR #18 closes.
+* **"Firestore is the store of record"** (the 2026-08-24 section) is now
+  *current implementation*, not target. See the handoff document, §11.
+
+## Still open, and why
+
+* **`vpn.ironcityit.com` is live and claimable.** One DNS change. Monitored by
+  `check-dns-exposure.py` on every PR; monitoring is not fixing.
+* **Live Firestore enumeration** on `icit-dnsguard` — 34 scans with submitter
+  emails. ShadowScan proves the console route needs no service account.
+* **The HubSpot token from D24 is not rotated.** Removing the file does not
+  remove it from git history.
+* **`FIREBASE_SERVICE_ACCOUNT` absent**, re-verified: no `gcloud`, no `firebase`
+  CLI, no application-default credentials, not on the repository.
+* **MariaDB never connected to.** The SQL store's contract is proven against a
+  real engine; the MariaDB dialect has never been executed. No server, driver or
+  container runtime here. It is the top item in the handoff backlog.
