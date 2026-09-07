@@ -14,7 +14,8 @@ Exit codes, which are distinct because they need different responses:
   0  every alias is as recorded, or better
   1  at least one alias is **worse** than recorded, or a new bad one appeared
   2  nothing could be verified — the resolver's negative answers could not be
-     trusted, so a pass would be a false one
+     trusted, so a pass would be a false one; or, with
+     --require-certificate-transparency, discovery covered less than it was asked to
   3  a usage problem
 
 The known and recorded state does not fail. A gate that stays red for a condition
@@ -60,12 +61,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="probe conventional names only; do not ask a third party what names exist",
     )
+    parser.add_argument(
+        "--require-certificate-transparency",
+        action="store_true",
+        help=(
+            "treat a certificate-transparency lookup that did not answer as a failure. Off by "
+            "default: it would put a third party's uptime in the path of every pull request. "
+            "Reduced coverage is reported either way"
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="emit the comparison as JSON")
     return parser
 
 
-def observe(domain: str, args: argparse.Namespace) -> list[dict[str, Any]]:
-    """Run the takeover module and return its per-alias rows."""
+def observe(domain: str, args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Run the takeover module and return its per-alias rows and what it covered."""
     from modules.alias_takeover import AliasTakeover
 
     ctx: dict[str, Any] = {"use_certificate_transparency": not args.no_certificate_transparency}
@@ -74,9 +84,12 @@ def observe(domain: str, args: argparse.Namespace) -> list[dict[str, Any]]:
 
     findings = AliasTakeover().run(parse_targets([domain])[0], ctx)
     for finding in findings:
-        if "checked" in (finding.evidence or {}):
-            return list(finding.evidence["checked"])
-    return []
+        evidence = finding.evidence or {}
+        if "checked" in evidence:
+            return list(evidence["checked"]), dict(evidence.get("coverage", {}))
+    # No aliases at all. The sweep still happened, so its coverage is still the
+    # honest thing to report about this domain.
+    return [], dict((ctx.get("alias_candidates") or {}).get("coverage", {}))
 
 
 def describe(summary: dict[str, Any]) -> str:
@@ -93,6 +106,12 @@ def describe(summary: dict[str, Any]) -> str:
             f"           {row['reason']}.\n"
             f"           This is not a pass. Re-run with --nameservers pointing at a resolver "
             f"that returns NXDOMAIN for names that do not exist."
+        )
+    for row in summary["reduced_coverage"]:
+        lines.append(
+            f"COVERAGE   {row['domain']} — certificate transparency did not answer, so only "
+            f"{row['coverage'].get('probe_names', 0)} conventional names were swept.\n"
+            f"           A dangling alias on a name nobody would guess would not have been found."
         )
     for row in summary["improvements"]:
         lines.append(
@@ -116,6 +135,10 @@ def describe(summary: dict[str, Any]) -> str:
             "held": "DNS exposure has not regressed.",
             "regressed": "DNS exposure has REGRESSED — see above.",
             "unverified": "DNS exposure could NOT be verified — see above. This is not a pass.",
+            "reduced_coverage": (
+                "DNS exposure held over a REDUCED surface — see above. Requested strictly, "
+                "so this is not a pass."
+            ),
         }[summary["verdict"]]
     )
     return "\n".join(lines)
@@ -133,8 +156,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         baselines = [{"domain": args.domain, "aliases": []}]
 
-    results = [compare(observe(entry["domain"], args), entry) for entry in baselines]
-    summary = summarise(results)
+    results = []
+    for entry in baselines:
+        rows, coverage = observe(entry["domain"], args)
+        results.append(compare(rows, entry, coverage))
+    summary = summarise(results, strict_coverage=args.require_certificate_transparency)
 
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))

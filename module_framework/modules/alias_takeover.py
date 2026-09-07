@@ -59,7 +59,13 @@ from typing import Any
 from base import Finding, ScanModule
 
 from ._dns import host_of, make_resolver, query, resolution, zone_apex
-from .subdomain_discovery import PROBE_NAMES, _crtsh_names, _default_session
+from .subdomain_discovery import (
+    PROBE_NAMES,
+    _crtsh_names,
+    _default_session,
+    coverage_is_full,
+    coverage_note,
+)
 
 #: Zones that hand a name under them to anyone who asks for it.
 #:
@@ -213,7 +219,7 @@ class AliasTakeover(ScanModule):
             return []
         res = make_resolver(ctx.get("nameservers"))
 
-        aliases = self._aliases(root, ctx, res)
+        aliases, coverage = self._aliases(root, ctx, res)
         if not aliases:
             return []
 
@@ -234,10 +240,13 @@ class AliasTakeover(ScanModule):
                 title="Alias destinations checked",
                 detail=(
                     f"{len(aliases)} alias(es) under {root} were followed to their destination; "
-                    f"{len(exposed)} did not resolve to an address."
+                    f"{len(exposed)} did not resolve to an address. Discovery examined "
+                    f"{len(ctx['alias_candidates']['names'])} name(s) " + coverage_note(coverage)
                 ),
-                evidence={"checked": verdicts},
-                confidence="confirmed",
+                evidence={"checked": verdicts, "coverage": coverage},
+                # A clean result over a reduced surface is not the same claim as
+                # a clean result over the full one, and must not read as one.
+                confidence="confirmed" if coverage_is_full(coverage) else "possible",
                 key="alias destinations checked",
             )
         )
@@ -245,7 +254,9 @@ class AliasTakeover(ScanModule):
 
     # ── discovery ───────────────────────────────────────────────────────────
 
-    def _aliases(self, root: str, ctx: dict[str, Any], res: Any) -> list[tuple[str, str]]:
+    def _aliases(
+        self, root: str, ctx: dict[str, Any], res: Any
+    ) -> tuple[list[tuple[str, str]], dict[str, Any]]:
         """Every (name, destination) alias pair under the scope root.
 
         Reuses whatever `subdomain_discovery` already resolved when both modules
@@ -257,13 +268,21 @@ class AliasTakeover(ScanModule):
         cached = ctx.get("alias_candidates")
         if isinstance(cached, dict) and cached.get("root") == root:
             names = cached["names"]
+            coverage = cached["coverage"]
         else:
             session = ctx.get("http") or _default_session()
-            names = {f"{label}.{root}" for label in PROBE_NAMES}
+            found_names = {f"{label}.{root}" for label in PROBE_NAMES}
+            coverage = {
+                "probe_names": len(PROBE_NAMES),
+                "certificate_transparency": "not requested",
+            }
             if ctx.get("use_certificate_transparency", True):
-                names |= _crtsh_names(session, root)
-            names = sorted(names)
-            ctx["alias_candidates"] = {"root": root, "names": names}
+                found, status = _crtsh_names(session, root)
+                found_names |= found
+                coverage["certificate_transparency"] = status
+                coverage["certificate_transparency_names"] = len(found)
+            names = sorted(found_names)
+            ctx["alias_candidates"] = {"root": root, "names": names, "coverage": coverage}
 
         def alias_of(fqdn: str) -> tuple[str, str] | None:
             targets = query(res, fqdn, "CNAME")
@@ -272,7 +291,7 @@ class AliasTakeover(ScanModule):
             return fqdn, targets[0].rstrip(".").lower()
 
         with ThreadPoolExecutor(max_workers=int(ctx.get("workers", 10))) as pool:
-            return [pair for pair in pool.map(alias_of, names) if pair]
+            return [pair for pair in pool.map(alias_of, names) if pair], coverage
 
     # ── the three questions ─────────────────────────────────────────────────
 

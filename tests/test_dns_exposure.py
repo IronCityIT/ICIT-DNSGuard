@@ -220,3 +220,65 @@ def test_the_committed_baseline_is_self_consistent_under_comparison():
             for a in entry.get("aliases", [])
         ]
         assert compare(observed, entry)["ok"] is True
+
+
+# ── discovery coverage ───────────────────────────────────────────────────────
+
+
+def full():
+    return {
+        "probe_names": 56,
+        "certificate_transparency": "ok",
+        "certificate_transparency_names": 9,
+    }
+
+
+def degraded():
+    return {"probe_names": 56, "certificate_transparency": "unavailable"}
+
+
+def test_coverage_is_carried_through_untouched():
+    result = compare([row("www.example.com", "resolves")], recorded(), degraded())
+    assert result["coverage"]["certificate_transparency"] == "unavailable"
+
+
+def test_a_reduced_sweep_is_reported():
+    summary = summarise([compare([], recorded(), degraded())])
+    assert summary["reduced_coverage"][0]["domain"] == "example.com"
+
+
+def test_a_reduced_sweep_does_not_fail_the_build_by_default():
+    """Failing by default would put a third party's uptime in the path of every
+    pull request, and a gate that goes red for reasons unrelated to the change is
+    a gate people learn to click past."""
+    summary = summarise([compare([], recorded(), degraded())])
+    assert summary["exit_code"] == 0
+    assert summary["verdict"] == "held"
+
+
+def test_a_reduced_sweep_fails_when_it_is_asked_to():
+    summary = summarise([compare([], recorded(), degraded())], strict_coverage=True)
+    assert (summary["verdict"], summary["exit_code"]) == ("reduced_coverage", 2)
+
+
+def test_a_full_sweep_is_never_reported_as_reduced():
+    summary = summarise([compare([], recorded(), full())], strict_coverage=True)
+    assert summary["reduced_coverage"] == []
+    assert summary["exit_code"] == 0
+
+
+def test_a_reduced_sweep_never_outranks_a_real_regression():
+    """Both would exit non-zero, but a known regression is the more actionable
+    finding and must be what the exit code names."""
+    summary = summarise(
+        [compare([row("vpn.example.com", "claimable_service")], recorded(), degraded())],
+        strict_coverage=True,
+    )
+    assert (summary["verdict"], summary["exit_code"]) == ("regressed", 1)
+
+
+def test_declining_certificate_transparency_is_not_reduced_coverage():
+    coverage = {"probe_names": 56, "certificate_transparency": "not requested"}
+    summary = summarise([compare([], recorded(), coverage)], strict_coverage=True)
+    assert summary["reduced_coverage"] == []
+    assert summary["exit_code"] == 0
