@@ -70,6 +70,9 @@ on:
 
 permissions:
   contents: read
+  # Reading previous runs' artifacts, to compare this assessment against the
+  # last one of the same domain. Read-only; nothing here writes to the repo.
+  actions: read
 
 concurrency:
   group: dns-analysis-${{ inputs.scan_id || github.run_id }}
@@ -237,6 +240,50 @@ jobs:
           name: dnsguard-report-${{ steps.ids.outputs.scan_id }}
           path: reports/
           retention-days: 90
+
+      # What moved since the last assessment of this same domain. Additive and
+      # incapable of failing the run: `continue-on-error` plus a tool that exits
+      # 0 even on a regression. A client's posture getting worse is news for the
+      # report, not a reason to fail the job that produced it — and a red run
+      # reads as "the scan broke", which is the opposite of the message.
+      - name: Compare against the previous assessment
+        id: compare
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT: ${{ steps.scan.outputs.report_file }}
+          DOMAIN: ${{ steps.ids.outputs.domain }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          mkdir -p previous
+          # The artifact name carries a scan id, not a domain, so candidates are
+          # downloaded and the tool picks the newest one for THIS domain. A run
+          # for somebody else's domain is the common case here, and comparing
+          # across targets reports everything as new and everything as resolved.
+          for run in $(gh run list --repo "$REPO" --workflow dns-analysis.yml \
+                         --status success --limit 12 \
+                         --json databaseId --jq '.[].databaseId'); do
+            [ "$run" = "$RUN_ID" ] && continue
+            gh run download "$run" --repo "$REPO" --dir "previous/$run" \
+              --pattern 'dnsguard-report-*' >/dev/null 2>&1 || true
+          done
+
+          python3 tools/compare.py --current "$REPORT" --candidates previous \
+            | tee comparison.txt
+          python3 tools/compare.py --current "$REPORT" --candidates previous \
+            --summary-md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the comparison
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnsguard-comparison-${{ steps.ids.outputs.scan_id }}
+          path: comparison.txt
+          retention-days: 90
+          if-no-files-found: ignore
 
       - name: Upload diagnostics
         if: always()

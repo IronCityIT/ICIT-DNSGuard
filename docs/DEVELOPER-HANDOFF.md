@@ -59,6 +59,7 @@ currently serving real users. **VERIFIED**.
 | Signed scan links | `dnsguard/links.py` | **VERIFIED** — expiring capability tokens; the replacement for "knowing the scan id is permission, forever" |
 | Web security policy | `deploy/web-headers.json`, `tools/render-headers.py` | **VERIFIED** — portable, renders to Caddy/nginx, parity with `firebase.json` enforced by test |
 | Scan ingest / retrieval | `dnsguard/scans.py` | **VERIFIED** as code+tests. Replaces `storeScanResults`; **not deployed, not cut over** |
+| Weekly comparison | `tools/compare.py`, wired into `dns-analysis.yml` | **VERIFIED** locally against two real reports; **first production run is the next scheduled one** |
 | Change detection | `dnsguard/diff.py` | **VERIFIED** — new / resolved / worsened / improved / unchanged between two scans of the same target |
 | Credential registry | `dnsguard/identity.py`, `tools/credential.py` | **VERIFIED** — tenant, actor and roles come from the credential |
 | Scanner entry point | `tools/scan.py` | **VERIFIED** — run live against `ironcityit.com` |
@@ -276,6 +277,18 @@ database directly from the browser.
 
 `dns-analysis.yml` runs `cron: '17 7 * * 1'` against `ironcityit.com`. Scheduled
 runs carry no inputs, so the workflow's `|| default` fallbacks supply them.
+
+Since 2026-09-08 the run also **compares itself against the previous assessment
+of the same domain** and writes the result to the job summary. It downloads
+candidate report artifacts from recent successful runs and `tools/compare.py`
+picks the newest one for that target — the run before this one is frequently a
+different client's domain, and comparing across targets reports everything as new
+and everything as resolved.
+
+The step is `continue-on-error` and the tool exits 0 even on a regression. This is
+the pipeline that serves the public free scan: a client's posture worsening is
+news for the report, not a reason to fail the job that produced it, and a red run
+reads as "the scan broke".
 
 ### 5.4 Exposure ratchets (VERIFIED)
 
@@ -747,6 +760,7 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| The comparison tool works on real reports | Two genuine `ironcityit.com` reports: `SOMETHING GOT WORSE since dnsguard-39620295e9f719d0`, `new: 1 critical`, `resolved: 1`, exit 0 | 2026-09-08 |
 | Both read paths behave correctly | Driven through a shim: Firestore mode returns the document / null; API mode fetches `/api/v1/public/scans/{token}`, returns null on 404, refuses a legacy id and a 500 | 2026-09-08 |
 | A restore rehearsal, on real data, with the audit chain intact afterwards | Two genuine `ironcityit.com` scans ingested, exported (4 docs), restored into an empty store, reconciled: `4 document(s) match the archive exactly`; restored audit chain `valid: True`; the critical takeover finding preserved | 2026-09-08 |
 | An archive edited after export is detected | Edited an audit record's `actor` in the real archive → `audit/000000000001 does not match its manifest hash`, exit 1 | 2026-09-08 |
