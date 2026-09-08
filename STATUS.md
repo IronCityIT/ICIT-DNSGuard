@@ -854,3 +854,54 @@ ironcityit.com: nothing got worse since dnsguard-34193523489
 That "resolved" is a reporting change rather than a posture change, and a
 fingerprint diff cannot tell the two apart. Recorded in the handoff as a known
 limit of comparing across a release rather than papered over.
+
+
+---
+
+# The AI analysis reaches the client — 2026-09-08
+
+## D31 — the engine ran, answered, and was discarded
+
+Found by downloading the artifacts of a production run and reading them. The
+consensus engine analysed every finding on every scan; the store job wrote
+`consensus: {status: "success"}` and threw the analysis away. The dashboard's AI
+panel looks for `ai_consensus`, found nothing, and hid itself.
+
+Four providers were being paid to analyse every finding, for nobody.
+
+The engine's contract was read from `consensus-engine` rather than assumed: its
+`workflow_call` declares `consensus_b64`. The analysis is now folded into the
+report, rolled up to the **worst** finding rather than averaged, with vendor
+names stripped — `model_responses` carry `provider` and `model_name`, and a scan
+report is a client-facing surface.
+
+## And then it broke production, which is worth recording
+
+The first version passed the analysis through an environment variable. Run
+`34214318274`:
+
+```
+##[error]An error occurred trying to start process '/usr/bin/bash' ...
+Argument list too long
+```
+
+207KB of JSON, 276KB as base64, against an environment-block size limit. The step
+failed before running.
+
+The merge logic was correct and had been verified against the real artifact from
+a real run. **The transport had not been.** Verifying a component against real
+data is not the same as verifying how the data gets to it.
+
+Nothing was lost while it was broken: `analyze` succeeded and kept its artifact,
+and `report-failure` wrote a terminal state — a scan that dies in the store step
+still reaches a state the dashboard stops polling.
+
+## Verified fixed in production
+
+Run `34216984420`:
+
+```
+DNS Analysis: success   AI Consensus: success   Store Results: success
+consensus merged: CRITICAL at 98.7% (13/15 models, 8 finding(s) analysed)
+storeScanResults responded HTTP 200
+```
