@@ -724,3 +724,36 @@ hiding rather than by trying to raise it, and all three had the same shape:
 * **MariaDB never connected to.** The SQL store's contract is proven against a
   real engine; the MariaDB dialect has never been executed. No server, driver or
   container runtime here. It is the top item in the handoff backlog.
+
+---
+
+# Hosting deploy retired — 2026-09-08
+
+`.github/workflows/firebase-deploy.yml` is **removed**.
+
+**Evidence:** `gh run list --workflow firebase-deploy.yml --limit 100` returns
+**55 runs, 55 failures, zero successes**, from 2026-01-11 to 2026-09-08. Every
+one failed at the `Deploy to Firebase Hosting` step with
+`Input required and not supplied: firebaseServiceAccount`, because
+`FIREBASE_SERVICE_ACCOUNT` was never minted.
+
+Three reasons, and the second is the one that made it urgent rather than tidy:
+
+1. **It deployed nothing.** Nine months, no successful run, no output anything
+   depended on. Removing it loses no capability because there was none.
+2. **It turned every push to `main` red.** A permanently failing check for a
+   reason no author of any pull request could fix is precisely the thing this
+   repository has repeatedly designed against — in `exposure-baseline.json`, in
+   `dns-baseline.json`, in the certificate-transparency coverage decision. It was
+   doing it to itself on every merge.
+3. **It targeted a retired platform.** Firebase Hosting is out of the target
+   architecture, so this was a broken path to somewhere we are leaving.
+
+**What is not lost.** The header and CSP policy that workflow would have applied
+lives in `deploy/web-headers.json`, renders for Caddy or nginx, and has a test
+holding it in parity with `firebase.json` while both exist.
+
+**What is now true and was not stated plainly before:** there is **no automated
+hosting deploy at all**. That is a truer description of the position than a
+workflow that pretended to be one. The live site continues to serve the last
+hand-deployed build, exactly as it did while the workflow existed.

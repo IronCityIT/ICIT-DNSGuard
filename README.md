@@ -115,8 +115,15 @@ is proven.
 ### What is deployable today
 
 Honestly: **nothing, from this repository.** `FIREBASE_SERVICE_ACCOUNT` does not
-exist, `firebase-deploy.yml` has failed on every push to `main`, and the live
-site serves the last hand-deployed build. The previous `deploy.sh` — a manual
+exist, and the live site serves the last hand-deployed build.
+
+The hosting-deploy workflow has been removed. It ran 55 times between January and
+September 2026 and **failed all 55**, because the secret it needs was never
+minted — so it deployed nothing, while turning every push to `main` red. It
+targeted Firebase Hosting, which is retired from the target architecture, so it
+was a broken path to a platform we are leaving. The header and CSP policy it
+would have applied lives in `deploy/web-headers.json` and renders for whatever
+serves the dashboard next. The previous `deploy.sh` — a manual
 Cloud Shell script for the retired platform — has been removed; it also carried a
 hardcoded API token (see the handoff document, D24: **the token still needs
 rotating**).
@@ -206,8 +213,7 @@ sh tools/gates.sh lint     # or one at a time
 ICIT-DNSGuard/
 ├── .github/workflows/
 │   ├── ci.yml                # quality gates on every PR
-│   ├── dns-analysis.yml      # the scan pipeline
-│   └── firebase-deploy.yml   # hosting deploy (see STATUS.md — currently blocked)
+│   └── dns-analysis.yml      # the scan pipeline
 ├── module_framework/         # the shared scan framework
 │   ├── base.py registry.py targets.py cli.py
 │   └── modules/              # one file per check
