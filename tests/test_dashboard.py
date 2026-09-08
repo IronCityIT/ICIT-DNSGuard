@@ -310,3 +310,68 @@ def test_every_severity_the_report_can_emit_has_a_pill_style(index):
     which reads as a rendering fault rather than as a finding."""
     for severity in ("critical", "high", "medium", "low", "info"):
         assert f".severity-pill.{severity}" in index, severity
+
+
+# ── the scans panel ──────────────────────────────────────────────────────────
+
+
+def test_the_console_has_a_scans_tab(console_js):
+    """The scan store, change detection and shareable links had no operator
+    surface at all until this panel existed."""
+    html = CONSOLE_HTML.read_text(encoding="utf-8")
+    assert 'data-tab="scans"' in html
+    assert 'data-panel="scans"' in html
+    assert 'id="scans-body"' in html
+    assert "scans: renderScans" in console_js
+
+
+def test_every_tab_has_a_panel_and_a_renderer(console_js):
+    """A tab with no panel renders nothing and looks broken; a panel with no
+    renderer throws. Adding one and forgetting the others is the easy mistake."""
+    html = CONSOLE_HTML.read_text(encoding="utf-8")
+    tabs = set(re.findall(r'data-tab="([a-z]+)"', html))
+    panels = set(re.findall(r'data-panel="([a-z]+)"', html))
+    renderers = set(re.findall(r"^\s+([a-z]+): render[A-Z]", console_js, re.M))
+    assert tabs == panels, f"tabs and panels disagree: {tabs ^ panels}"
+    assert tabs <= renderers, f"tabs with no renderer: {tabs - renderers}"
+
+
+def test_a_baseline_is_not_presented_as_a_page_of_new_problems(console_js):
+    """`diff.py` is careful that a first scan is a baseline rather than "N things
+    just broke". Labelling every row "new" underneath that banner reintroduces
+    the same confusion one layer up."""
+    assert 'data.baseline ? "found" : change.outcome' in console_js
+    assert 'data.baseline ? "State" : "Change"' in console_js
+
+
+def test_the_headline_is_whether_anything_got_worse(console_js):
+    """A count of changes answers a different question, and reads as alarming
+    when most of them are improvements."""
+    assert "data.regressed" in console_js
+    assert "Nothing got worse since the previous assessment." in console_js
+
+
+def test_both_severities_are_shown_when_one_became_the_other(console_js):
+    """ "medium to critical" is the fact. Either number alone is half of it."""
+    assert "change.previous_severity" in console_js
+    assert 'text: " was " + change.previous_severity' in console_js
+
+
+def test_an_unproven_change_is_labelled(console_js):
+    assert 'change.confidence !== "confirmed"' in console_js
+
+
+def test_minting_a_share_link_asks_first(console_js):
+    """It grants access to somebody without an account. The operator should be
+    asked before that happens, not told afterwards."""
+    minting = console_js[console_js.index("function mintLink") :]
+    assert "window.confirm" in minting.split("function ")[1]
+    assert "without signing in" in console_js
+
+
+def test_the_scans_panel_builds_no_markup_from_stored_data(console_js):
+    """Scan documents are written by the pipeline and rendered here. The console
+    has never used innerHTML and adding a panel is exactly when that slips."""
+    panel = console_js[console_js.index("function renderScans") : console_js.index("var RENDERERS")]
+    assert ".innerHTML" not in panel
+    assert "insertAdjacentHTML" not in panel

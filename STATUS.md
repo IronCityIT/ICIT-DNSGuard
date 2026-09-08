@@ -753,6 +753,9 @@ Three reasons, and the second is the one that made it urgent rather than tidy:
 lives in `deploy/web-headers.json`, renders for Caddy or nginx, and has a test
 holding it in parity with `firebase.json` while both exist.
 
+**Verified after merging:** the merge commit `b61d218` triggered **only** CI. No
+`Deploy to Firebase Hosting` run, for the first time since January.
+
 **What is now true and was not stated plainly before:** there is **no automated
 hosting deploy at all**. That is a truer description of the position than a
 workflow that pretended to be one. The live site continues to serve the last
