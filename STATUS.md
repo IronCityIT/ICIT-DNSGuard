@@ -799,3 +799,58 @@ the unchanged: still open, correctly not reported as a new regression.
 `STATUS` has listed the **`ai-consensus` job** as blocked on four missing API
 keys since the August run, then corrected to "the secrets exist but it has never
 run". It ran, and it succeeded. That entry is closed.
+
+
+---
+
+# Two defects found by reading production output — 2026-09-08
+
+Both came from downloading the artifacts of run `34193523489` and reading what
+the product had actually said to a client, rather than from reviewing code.
+
+## D29 — "Overall risk is low" on a confirmed critical takeover
+
+The executive summary — the sentence most clients read, and often the only one —
+said the domain was *"well defended against impersonation"* with *"Overall risk
+is low (27/100)"*, on a report carrying a verified subdomain takeover of
+`vpn.ironcityit.com`.
+
+The risk score began at `100 - email_score`, so a perfect email posture started
+at zero and severities only nudged it: a critical adds 15, which on an otherwise
+clean domain cannot leave the "low" band. **A confirmed domain takeover could not
+arithmetically produce anything but a reassuring number.**
+
+Fixed two ways: overall risk is floored by the worst finding (with the floors
+matching the level thresholds, so the number and the word never disagree), and
+the summary leads with what is urgent instead of the email grade.
+
+## D30 — one problem reported twice
+
+`subdomain_discovery` still emitted the hedging "Aliases point at destinations
+that do not resolve" at high, which `alias_takeover` had replaced with a verified
+critical verdict. The client saw the same host twice, at two severities, with the
+weaker wording undermining the stronger.
+
+## Verified in production, not just locally
+
+Run `34203188115`, dispatched after the merge:
+
+```
+risk: 80 critical
+ironcityit.com has 1 critical issue(s) needing immediate attention.
+Overall risk is critical (80/100). Email authentication is strong (A+).
+```
+
+Eight findings where there were nine; the duplicate is gone.
+
+And the change-detection step caught the product change itself:
+
+```
+ironcityit.com: nothing got worse since dnsguard-34193523489
+  resolved: 1  unchanged: 8
+  resolved  high  ironcityit.com  Aliases point at destinations that do not resolve
+```
+
+That "resolved" is a reporting change rather than a posture change, and a
+fingerprint diff cannot tell the two apart. Recorded in the handoff as a known
+limit of comparing across a release rather than papered over.

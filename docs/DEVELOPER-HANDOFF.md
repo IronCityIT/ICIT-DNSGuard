@@ -303,6 +303,19 @@ deliberately not a pass.
 
 ---
 
+### A limit of fingerprint diffing, worth knowing
+
+Run `34203188115` reported the duplicate finding's removal as `resolved`. That is
+a **reporting** change, not a posture change — the alias is still dangling and
+still reported as critical by `alias_takeover`. A fingerprint diff cannot
+distinguish "the client fixed it" from "we stopped reporting it twice", because
+both look like a finding that was there and now is not.
+
+This is inherent to comparing across a product change rather than a defect, and
+it is not worth engineering around: it only misleads in the release where a
+finding is added or removed, and the release notes say which. Worth knowing when
+reading a comparison that spans a deploy.
+
 ## 6. Configuration
 
 **VERIFIED** — environment variables read by the code:
@@ -762,6 +775,8 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| **D29 and D30 verified fixed in production** | Run `34203188115` against `ironcityit.com`: `risk: 80 critical`, summary `"1 critical issue(s) needing immediate attention … Email authentication is strong (A+)"`, and the duplicate `subdomain_discovery` finding gone — 8 findings where there were 9 | 2026-09-08 |
+| Change detection caught the product change itself | Same run's comparison artifact: `nothing got worse since dnsguard-34193523489` / `resolved: 1` / `resolved high … Aliases point at destinations that do not resolve` | 2026-09-08 |
 | D29 found in a real production report, and the fix checked against it | Run `34193523489`'s own findings rescored: **before** `risk 27/100 low` + "well defended against impersonation"; **after** `risk 80/100 critical` + "1 critical issue(s) needing immediate attention" | 2026-09-08 |
 | **The whole scan pipeline, end to end in production** | `workflow_dispatch` run `34193523489` against `ironcityit.com`: DNS Analysis ✅, AI Consensus ✅, Store Results ✅, Report Failure correctly skipped. Four artifacts including `dnsguard-comparison-*` | 2026-09-08 |
 | The comparison step runs in production and finds the right predecessor | Same run: `ironcityit.com: nothing got worse since dnsguard-34127879755` / `unchanged: 9` — it located an earlier assessment of the same domain, downloaded its artifact and compared | 2026-09-08 |
