@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fold the AI consensus into a scan report, ready for storage.
 
+    python3 tools/enrich.py --report report.json --consensus-file result.json -o payload.json
     python3 tools/enrich.py --report report.json --consensus-b64-file b64.txt -o payload.json
-    CONSENSUS_B64=... python3 tools/enrich.py --report report.json -o payload.json
 
 The scan workflow calls the shared consensus engine, which hands back a
 base64-encoded analysis as its `consensus_b64` output. Until now the store step
@@ -12,6 +12,12 @@ to render.
 
 This reads the engine's output and merges it in. It does no analysis of its own:
 the fleet rule is one source of truth for AI, and this is a consumer of it.
+
+**Prefer `--consensus-file`, the engine's result artifact.** The first version of
+this passed `consensus_b64` through an environment variable and the store job
+died with "Argument list too long": the analysis is hundreds of kilobytes, and an
+environment block has a size limit. The base64 forms are kept for small inputs
+and for testing.
 
 **Vendor names are removed.** The engine's per-model responses carry the provider
 and model that produced them; a client-facing report never names underlying
@@ -38,10 +44,31 @@ if str(ROOT) not in sys.path:
 from dnsguard.consensus import attach, decode  # noqa: E402
 
 
+def read_json(path: pathlib.Path) -> list:
+    """The engine's result artifact. Malformed content is not an error — the
+    scan it was enriching is still worth storing."""
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        return [e for e in parsed if isinstance(e, dict)]
+    return []
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dnsguard-enrich")
     parser.add_argument("--report", required=True, help="the scan report to enrich")
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
+        "--consensus-file",
+        help="the engine's result artifact, as raw JSON. This is the form to use: "
+        "the analysis runs to hundreds of kilobytes and passing it through an "
+        "environment variable exceeds the argument-list limit and kills the step",
+    )
+    source.add_argument(
         "--consensus-b64-file",
         help="file holding the engine's consensus_b64 output; "
         "otherwise read from the CONSENSUS_B64 environment variable",
@@ -63,14 +90,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{report_path} is not valid JSON: {exc}", file=sys.stderr)
         return 2
 
-    if args.consensus_b64_file:
-        path = pathlib.Path(args.consensus_b64_file)
-        # Missing is not fatal: the enrichment is optional and the scan is not.
-        raw = path.read_text(encoding="utf-8") if path.is_file() else ""
+    # Missing input is never fatal: the enrichment is optional and the scan is not.
+    if args.consensus_file:
+        path = pathlib.Path(args.consensus_file)
+        entries = read_json(path) if path.is_file() else []
     else:
-        raw = os.environ.get("CONSENSUS_B64", "")
-
-    entries = decode(raw)
+        if args.consensus_b64_file:
+            b64_path = pathlib.Path(args.consensus_b64_file)
+            raw = b64_path.read_text(encoding="utf-8") if b64_path.is_file() else ""
+        else:
+            raw = os.environ.get("CONSENSUS_B64", "")
+        entries = decode(raw)
     enriched = attach(report, entries)
 
     pathlib.Path(args.output).write_text(
