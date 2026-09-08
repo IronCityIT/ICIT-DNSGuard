@@ -54,6 +54,7 @@ currently serving real users. **VERIFIED**.
 | Asset inventory | `AssetSink` in `base.py`, populated by the discovery modules | **VERIFIED** — 20 assets on a live domain, 7 merged across two modules |
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
 | SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
+| Signed scan links | `dnsguard/links.py` | **VERIFIED** — expiring capability tokens; the replacement for "knowing the scan id is permission, forever" |
 | Web security policy | `deploy/web-headers.json`, `tools/render-headers.py` | **VERIFIED** — portable, renders to Caddy/nginx, parity with `firebase.json` enforced by test |
 | Scan ingest / retrieval | `dnsguard/scans.py` | **VERIFIED** as code+tests. Replaces `storeScanResults`; **not deployed, not cut over** |
 | Change detection | `dnsguard/diff.py` | **VERIFIED** — new / resolved / worsened / improved / unchanged between two scans of the same target |
@@ -298,6 +299,7 @@ deliberately not a pass.
 | `DNSGUARD_API_TENANT` | `dnsguard/identity.py` | The one tenant that token may act as. |
 | `DNSGUARD_API_ROLES` | `dnsguard/identity.py` | Comma list from `viewer,operator,approver`. **Defaults to `viewer`.** |
 | `DNSGUARD_API_ACTOR` | `dnsguard/identity.py` | Who the audit chain records for that credential. |
+| `DNSGUARD_LINK_SECRET` | `dnsguard/api.py` → `dnsguard/links.py` | HMAC key for signed scan links. Absent → minting and public reads both answer 503; nothing is signed or accepted. |
 | `DNSGUARD_DATA_DIR` | `dnsguard/api.py`, Dockerfile | Root for `JsonFileStore`. Unset → in-memory store. |
 | `DNSGUARD_FETCH_FEEDS` | `dnsguard/api.py` | `1/true/yes` wires the HTTP feed fetcher. Off → maintenance reports feeds as "not attempted" rather than healthy. |
 
@@ -466,7 +468,7 @@ names in `cloud-function/index.js`):** `HUBSPOT_API_KEY`, `GITHUB_PAT`,
 `STORE_RESULTS_URL`.
 
 **TARGET, not yet created:** MariaDB credentials, NAS volume credentials, ingest
-API token. Names to be agreed with whoever provisions them; not invented here.
+API token, `DNSGUARD_LINK_SECRET`. Names to be agreed with whoever provisions them; not invented here.
 
 ---
 
@@ -547,11 +549,14 @@ anything is switched, and nothing is deleted until the replacement is proven.**
   is deployment and the cutover, both of which need infrastructure that does not
   exist yet.
 
-  **Deliberately not built: an unauthenticated public read.** The free-scan page
-  polls by `scan_id` with no identity, which is exactly the property that leaves
-  the current Firestore open. Replacing it needs a decision — a signed expiring
-  link is the obvious candidate — and inventing one here would rebuild the same
-  hole on new infrastructure.
+  **The public read is now built too**, as a signed expiring link
+  (`dnsguard/links.py`, `GET /api/v1/public/scans/{token}`). The free-scan
+  recipient has no identity and never will, so the permission travels in the URL
+  as a capability naming its own tenant, scan and expiry, signed with HMAC-SHA256.
+  Minting is operator-gated and audited; reading is unauthenticated by design.
+  Unlike the current arrangement it expires, it cannot be repointed at another
+  scan, and it grants one scan rather than the ability to enumerate the
+  collection.
 - **Phase 3 — cut over.** `dns-analysis.yml` writes to both stores, then to the
   new one only. Dashboard reads through the API. Existing 34 scan documents are
   **exported and imported, then reconciled by count and checksum** before the
@@ -723,6 +728,7 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| A signed link expires, cannot be repointed, and leaks nothing on refusal | `pytest tests/test_links.py tests/test_api.py` — 31 + 66 passed, including re-signing with the real secret as a control so the tamper tests cannot pass for the wrong reason | 2026-09-07 |
 | `resolver_performance` reports unmeasured rather than "domain is down" when the scanner cannot reach the resolvers | `pytest tests/test_resolver_performance.py` — 16 passed, benchmark and control both injected | 2026-09-07 |
 | `network_path` emits nothing above `info`, and reports a complete result on every early return | `pytest tests/test_network_path.py` — 17 passed, including the traceroute-timeout path that would previously have raised `KeyError` | 2026-09-07 |
 | MTA-STS mode is read from the policy, not the record | Live: `google.com` → `mode=enforce max_age=86400` reported enforced; `ironcityit.com` → no record, reported not enforced | 2026-09-07 |

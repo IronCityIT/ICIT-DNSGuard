@@ -8,6 +8,7 @@ either hold or do not.
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from dnsguard.api import Principal, Services, create_app
@@ -780,3 +781,100 @@ def test_another_tenant_cannot_read_the_comparison(services):
     client_for(services).post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
     intruder = client_for(services, tenant="globex")
     assert intruder.get("/api/v1/tenants/acme/scans/s-1/changes").status_code == 403
+
+
+# ── the one public path: signed, expiring scan links ─────────────────────────
+
+LINK_SECRET = "a-link-secret-" + "long-enough-for-hmac"
+
+
+@pytest.fixture
+def linked(services, monkeypatch):
+    """A client whose deployment has link sharing configured."""
+    monkeypatch.setenv("DNSGUARD_LINK_SECRET", LINK_SECRET)
+    return client_for(services)
+
+
+def test_a_minted_link_reads_the_scan_without_any_credential(linked):
+    """The whole point: somebody with no account, who will never have one,
+    coming back to their own result."""
+    linked.post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    minted = linked.post("/api/v1/tenants/acme/scans/s-1/link")
+    assert minted.status_code == 201
+
+    anonymous = TestClient(create_app(linked.app.state.services, authenticate=_refuse))
+    read = anonymous.get(minted.json()["path"])
+    assert read.status_code == 200
+    assert read.json()["scan_id"] == "s-1"
+
+
+def _refuse(*_args, **_kwargs):
+    """An authenticate that never succeeds, so a public route reached through it
+    is genuinely reached without credentials."""
+    raise HTTPException(status_code=401, detail="no credential")
+
+
+def test_the_public_read_carries_no_submitter_address(linked):
+    linked.post("/api/v1/tenants/acme/scans", json=a_report("s-1", email="someone@acme.example"))
+    token = linked.post("/api/v1/tenants/acme/scans/s-1/link").json()["token"]
+
+    anonymous = TestClient(create_app(linked.app.state.services, authenticate=_refuse))
+    read = anonymous.get(f"/api/v1/public/scans/{token}")
+    assert read.status_code == 200
+    assert "someone@acme.example" not in read.text
+
+
+def test_a_tampered_token_is_a_404(linked):
+    linked.post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    token = linked.post("/api/v1/tenants/acme/scans/s-1/link").json()["token"]
+    anonymous = TestClient(create_app(linked.app.state.services, authenticate=_refuse))
+    assert anonymous.get(f"/api/v1/public/scans/{token}x").status_code == 404
+
+
+def test_an_expired_token_stops_working(linked, clock):
+    """A link in a mailbox is a permission that lasts as long as the mailbox,
+    unless it stops working."""
+    linked.post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    token = linked.post("/api/v1/tenants/acme/scans/s-1/link").json()["token"]
+
+    anonymous = TestClient(create_app(linked.app.state.services, authenticate=_refuse))
+    assert anonymous.get(f"/api/v1/public/scans/{token}").status_code == 200
+    clock.advance(91 * 24 * 3600)
+    assert anonymous.get(f"/api/v1/public/scans/{token}").status_code == 404
+
+
+def test_minting_a_link_needs_the_operator_role(services, monkeypatch):
+    """Reading is unauthenticated by design; granting is not. The gate belongs
+    where the decision to share is made."""
+    monkeypatch.setenv("DNSGUARD_LINK_SECRET", LINK_SECRET)
+    client_for(services).post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    reader = client_for(services, roles=["viewer"])
+    assert reader.post("/api/v1/tenants/acme/scans/s-1/link").status_code == 403
+
+
+def test_a_link_cannot_be_minted_for_another_tenants_scan(services, monkeypatch):
+    monkeypatch.setenv("DNSGUARD_LINK_SECRET", LINK_SECRET)
+    client_for(services).post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    intruder = client_for(services, tenant="globex")
+    assert intruder.post("/api/v1/tenants/acme/scans/s-1/link").status_code == 403
+
+
+def test_a_link_cannot_be_minted_for_a_scan_that_does_not_exist(linked):
+    assert linked.post("/api/v1/tenants/acme/scans/nope/link").status_code == 404
+
+
+def test_minting_is_audited(linked, services):
+    linked.post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    linked.post("/api/v1/tenants/acme/scans/s-1/link")
+    actions = [r.action for r in services.audit.records("acme")]
+    assert "scan.link_minted" in actions
+
+
+def test_link_sharing_refuses_rather_than_disappearing_when_unconfigured(services, monkeypatch):
+    """A route that quietly vanishes is a route somebody assumes is protecting
+    them. It answers, and the answer is that this deployment does not do it."""
+    monkeypatch.delenv("DNSGUARD_LINK_SECRET", raising=False)
+    client = client_for(services)
+    client.post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
+    assert client.post("/api/v1/tenants/acme/scans/s-1/link").status_code == 503
+    assert client.get("/api/v1/public/scans/anything").status_code == 503
