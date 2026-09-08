@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -234,3 +237,97 @@ def test_the_original_report_is_not_mutated():
     report = {"findings": [], "domain": "acme.example"}
     attach(report, [entry()])
     assert "ai_consensus" not in report
+
+
+# ── the transport, which is where this actually broke ────────────────────────
+#
+# The first version passed the engine's `consensus_b64` output through an
+# environment variable. It worked against every fixture and every local run, and
+# died in production with:
+#
+#   An error occurred trying to start process '/usr/bin/bash' ...
+#   Argument list too long
+#
+# The analysis for one scan is 207KB of JSON — 276KB as base64 — and an
+# environment block has a size limit. The tool was right and the transport was
+# untested, which is its own lesson: verifying a component against real data is
+# not the same as verifying how the data gets there.
+
+
+ROOT = Path(__file__).resolve().parent.parent
+ENRICH = ROOT / "tools" / "enrich.py"
+
+
+def run_enrich(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(ENRICH), *args], capture_output=True, text=True, cwd=str(ROOT)
+    )
+
+
+def write(path: Path, data) -> Path:
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_the_analysis_is_read_from_a_file_not_an_environment_variable(tmp_path):
+    """A file has no size limit worth worrying about. An environment block does,
+    and one scan's analysis exceeds it."""
+    report = write(tmp_path / "r.json", {"domain": "acme.example", "findings": []})
+    analysis = write(tmp_path / "c.json", [entry("CRITICAL", 98.6)])
+    out = tmp_path / "payload.json"
+
+    result = run_enrich("--report", str(report), "--consensus-file", str(analysis), "-o", str(out))
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["ai_consensus_severity"] == "CRITICAL"
+
+
+def test_a_large_analysis_is_handled(tmp_path):
+    """Sized like the real thing, which is what the environment variable could
+    not carry."""
+    big = [entry("CRITICAL", 98.6, verification_steps=["step " * 200] * 40) for _ in range(8)]
+    analysis = write(tmp_path / "c.json", big)
+    assert analysis.stat().st_size > 100_000, "the fixture must actually be large"
+
+    report = write(tmp_path / "r.json", {"findings": []})
+    out = tmp_path / "payload.json"
+    result = run_enrich("--report", str(report), "--consensus-file", str(analysis), "-o", str(out))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(out.read_text(encoding="utf-8"))["ai_consensus_severity"] == "CRITICAL"
+
+
+@pytest.mark.parametrize("missing", ["/nonexistent/analysis.json"])
+def test_a_missing_analysis_writes_the_report_through_unchanged(tmp_path, missing):
+    """The download step is `continue-on-error`; a scan without enrichment is
+    still a scan worth storing."""
+    report = write(tmp_path / "r.json", {"domain": "acme.example", "findings": [{"t": 1}]})
+    out = tmp_path / "payload.json"
+    result = run_enrich("--report", str(report), "--consensus-file", missing, "-o", str(out))
+    assert result.returncode == 0
+    assert "no consensus to merge" in result.stdout
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert "ai_consensus" not in payload
+    assert payload["findings"] == [{"t": 1}]
+
+
+def test_no_analysis_argument_at_all_is_fine(tmp_path):
+    """What the workflow passes when the engine produced nothing."""
+    report = write(tmp_path / "r.json", {"findings": []})
+    out = tmp_path / "payload.json"
+    assert run_enrich("--report", str(report), "-o", str(out)).returncode == 0
+
+
+def test_a_corrupt_analysis_does_not_cost_the_scan(tmp_path):
+    report = write(tmp_path / "r.json", {"findings": [{"t": 1}]})
+    (tmp_path / "c.json").write_text("{not json", encoding="utf-8")
+    out = tmp_path / "payload.json"
+    result = run_enrich(
+        "--report", str(report), "--consensus-file", str(tmp_path / "c.json"), "-o", str(out)
+    )
+    assert result.returncode == 0
+    assert "ai_consensus" not in json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_a_missing_report_is_a_usage_error(tmp_path):
+    """The report is the thing being stored. Its absence is not degradation."""
+    assert run_enrich("--report", "/nope.json", "-o", str(tmp_path / "o.json")).returncode == 2

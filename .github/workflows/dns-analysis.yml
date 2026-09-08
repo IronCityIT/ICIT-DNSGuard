@@ -331,6 +331,18 @@ jobs:
           name: dnsguard-report-${{ needs.analyze.outputs.scan_id }}
           path: incoming
 
+      # The analysis itself, as a file. It must NOT come through an environment
+      # variable: the first version of this passed `consensus_b64` that way and
+      # the step died with "Argument list too long" — the analysis runs to
+      # hundreds of kilobytes. Non-fatal, because a scan without enrichment is
+      # still a scan worth storing.
+      - name: Download the AI analysis
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: consensus-result-${{ needs.analyze.outputs.scan_id }}
+          path: consensus
+
       - name: Build storeScanResults payload
         env:
           SCAN_ID: ${{ needs.analyze.outputs.scan_id }}
@@ -338,10 +350,6 @@ jobs:
           CLIENT_NAME: ${{ needs.analyze.outputs.client_name }}
           DOMAIN: ${{ needs.analyze.outputs.domain }}
           CONSENSUS_STATUS: ${{ needs.ai-consensus.result }}
-          # The engine's actual analysis, not just whether its job passed. Its
-          # declared output (see consensus-engine/.github/workflows/analyze.yml)
-          # is `consensus_b64`, empty when the analysis failed.
-          CONSENSUS_B64: ${{ needs.ai-consensus.outputs.consensus_b64 }}
         run: |
           set -euo pipefail
           REPORT=$(find incoming -maxdepth 2 -name '*.json' ! -name '*stderr*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
@@ -350,7 +358,9 @@ jobs:
           # Fold the consensus into the report before the routing fields are
           # added. Vendor names are stripped there; a failed analysis leaves the
           # report untouched rather than writing an empty AI section.
-          python3 tools/enrich.py --report "$REPORT" -o enriched.json
+          ANALYSIS=$(find consensus -maxdepth 2 -name '*.json' 2>/dev/null | head -1)
+          python3 tools/enrich.py --report "$REPORT" \
+            ${ANALYSIS:+--consensus-file "$ANALYSIS"} -o enriched.json
           REPORT=enriched.json
           # The dashboard renders straight off this document, so the report's own
           # shape is preserved and the routing fields are added alongside it.
