@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from dnsguard.consensus import attach, decode, strip_vendors, summarise
+from dnsguard.consensus import attach, decode, pair, strip_vendors, summarise
 
 #: Our tooling. These must never appear in a stored report.
 TOOL_VENDORS = ("Groq", "OpenRouter", "Gemini", "model_name", "model_responses")
@@ -331,3 +331,73 @@ def test_a_corrupt_analysis_does_not_cost_the_scan(tmp_path):
 def test_a_missing_report_is_a_usage_error(tmp_path):
     """The report is the thing being stored. Its absence is not degradation."""
     assert run_enrich("--report", "/nope.json", "-o", str(tmp_path / "o.json")).returncode == 2
+
+
+# ── pairing an analysis to the finding it is about ───────────────────────────
+#
+# The engine returns analyses in the order it received the findings and puts no
+# identifier on them, so the only pairing available is positional. Verified
+# against a real run — the DNSSEC analysis lands on the DNSSEC finding — but an
+# unchecked assumption fails silently here in a particularly nasty way: a
+# reordered entry would put a CRITICAL analysis beside an INFO finding, and that
+# is exactly what a *correct* pairing looks like when the engine rates something
+# higher than we did.
+
+
+def a_finding(title="Missing SPF Record", severity="high", fingerprint="fp-1"):
+    return {
+        "title": title,
+        "severity": severity,
+        "fingerprint": fingerprint,
+        "asset": "acme.example",
+    }
+
+
+def test_each_analysis_names_the_finding_it_is_about():
+    findings = [a_finding("Takeover", "critical", "fp-a"), a_finding("DNSSEC", "low", "fp-b")]
+    paired = pair(findings, [entry("CRITICAL"), entry("MEDIUM")])
+    assert [p["finding_fingerprint"] for p in paired] == ["fp-a", "fp-b"]
+    assert [p["finding_title"] for p in paired] == ["Takeover", "DNSSEC"]
+
+
+def test_our_severity_is_carried_next_to_the_engine_s():
+    """The disagreement is the useful part. Our modules rated DNSSEC low and the
+    engine rated it medium; a reader can only see that if both are present."""
+    paired = pair([a_finding("DNSSEC", "low")], [entry("MEDIUM")])
+    assert (paired[0]["finding_severity"], paired[0]["consensus_severity"]) == ("low", "MEDIUM")
+
+
+def test_a_mismatched_count_pairs_nothing():
+    """An unlabelled analysis is better than a confidently mislabelled one."""
+    paired = pair([a_finding()], [entry("CRITICAL"), entry("LOW")])
+    assert all("finding_fingerprint" not in p for p in paired)
+    assert all("unpaired_reason" in p for p in paired)
+
+
+def test_the_reason_names_both_counts():
+    paired = pair([a_finding(), a_finding()], [entry()])
+    assert "1 analyses for 2 findings" in paired[0]["unpaired_reason"]
+
+
+def test_pairing_still_strips_vendor_names():
+    paired = pair([a_finding()], [entry("CRITICAL")])
+    assert "model_responses" not in paired[0]
+    assert "Groq" not in json.dumps(paired)
+
+
+def test_a_report_with_no_findings_pairs_nothing_and_does_not_raise():
+    paired = pair([], [entry()])
+    assert "unpaired_reason" in paired[0]
+
+
+def test_attach_pairs_against_the_reports_own_findings():
+    report = {"findings": [a_finding("Takeover", "critical", "fp-a")]}
+    enriched = attach(report, [entry("CRITICAL")])
+    assert enriched["ai_consensus_findings"][0]["finding_fingerprint"] == "fp-a"
+
+
+def test_a_finding_without_a_fingerprint_still_gets_its_title():
+    """Older stored reports predate the fingerprint reaching the client row."""
+    paired = pair([{"title": "Old finding", "severity": "high"}], [entry()])
+    assert paired[0]["finding_title"] == "Old finding"
+    assert paired[0]["finding_fingerprint"] == ""

@@ -140,6 +140,42 @@ def _dedupe(steps: builtins.list[Any]) -> builtins.list[str]:
     return out
 
 
+def pair(
+    findings: builtins.list[dict[str, Any]], entries: builtins.list[dict[str, Any]]
+) -> builtins.list[dict[str, Any]]:
+    """Attach each analysis to the finding it is about.
+
+    The engine returns analyses in the order it received the findings and puts no
+    identifier on them, so the only available pairing is positional. That works —
+    verified against a real run, where the DNSSEC analysis lands on the DNSSEC
+    finding — but it is an assumption, and an unchecked one fails silently: a
+    reordered or dropped entry would put a CRITICAL analysis beside an INFO
+    finding, which is exactly what a *correct* pairing can also look like when
+    the engine rates something higher than we did.
+
+    So the count is checked. If it does not match, nothing is paired and every
+    entry says why, because an unlabelled analysis is better than a confidently
+    mislabelled one.
+    """
+    aligned = len(findings) == len(entries)
+    out: builtins.list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        detail = strip_vendors(entry)
+        if aligned:
+            finding = findings[index]
+            detail["finding_fingerprint"] = finding.get("fingerprint", "")
+            detail["finding_title"] = finding.get("title", "")
+            detail["finding_asset"] = finding.get("asset", "") or finding.get("target", "")
+            detail["finding_severity"] = finding.get("severity", "")
+        else:
+            detail["unpaired_reason"] = (
+                f"the engine returned {len(entries)} analyses for {len(findings)} findings, "
+                "so which analysis belongs to which finding cannot be established"
+            )
+        out.append(detail)
+    return out
+
+
 def attach(report: dict[str, Any], entries: builtins.list[dict[str, Any]]) -> dict[str, Any]:
     """Add the consensus to a report, or leave it exactly as it was.
 
@@ -156,7 +192,8 @@ def attach(report: dict[str, Any], entries: builtins.list[dict[str, Any]]) -> di
     enriched["ai_consensus"] = summary
     enriched["ai_consensus_severity"] = summary.get("consensus_severity", "")
     enriched["ai_confidence_percent"] = summary.get("confidence_percent", 0)
-    # The per-finding detail, vendor names removed, for anything that wants more
-    # than the headline.
-    enriched["ai_consensus_findings"] = [strip_vendors(e) for e in entries]
+    # The per-finding detail, vendor names removed and each analysis labelled
+    # with the finding it is about, for anything that wants more than the
+    # headline.
+    enriched["ai_consensus_findings"] = pair(report.get("findings") or [], entries)
     return enriched
