@@ -303,6 +303,14 @@ deliberately not a pass.
 
 ---
 
+### Large data goes in files, not the environment
+
+The store job carries the AI analysis as a downloaded artifact. It must not go
+through an environment variable: one scan's analysis is 207KB of JSON, 276KB as
+base64, and an environment block has a size limit — passing it that way made the
+step fail with `Argument list too long` before a single line of it ran. That was
+established by breaking it, in run `34214318274`.
+
 ### A limit of fingerprint diffing, worth knowing
 
 Run `34203188115` reported the duplicate finding's removal as `resolved`. That is
@@ -776,6 +784,8 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| **D31 verified fixed in production** | Run `34216984420`: all jobs green, `consensus merged: CRITICAL at 98.7% (13/15 models, 8 finding(s) analysed)`, `storeScanResults responded HTTP 200`. The analysis now reaches the stored document the dashboard reads | 2026-09-08 |
+| The first attempt at D31 broke the store job, and the failure was contained | Run `34214318274`: `Argument list too long` — 276KB of base64 in an environment block. `analyze` still succeeded and kept its artifact, and `report-failure` wrote a terminal state, so no scan was left spinning | 2026-09-08 |
 | The consensus engine's real output merges correctly | Run `34203188115`'s own `consensus-result` artifact through `tools/enrich.py`: `CRITICAL at 98.6% (13/15 models, 8 finding(s) analysed)`, compliance mapping across 10 frameworks, remediation de-duplicated, and `Groq`/`OpenRouter`/`model_name`/`model_responses` all absent from the payload | 2026-09-08 |
 | **D29 and D30 verified fixed in production** | Run `34203188115` against `ironcityit.com`: `risk: 80 critical`, summary `"1 critical issue(s) needing immediate attention … Email authentication is strong (A+)"`, and the duplicate `subdomain_discovery` finding gone — 8 findings where there were 9 | 2026-09-08 |
 | Change detection caught the product change itself | Same run's comparison artifact: `nothing got worse since dnsguard-34193523489` / `resolved: 1` / `resolved high … Aliases point at destinations that do not resolve` | 2026-09-08 |
