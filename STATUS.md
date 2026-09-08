@@ -679,6 +679,20 @@ memory and the filesystem, so this goes through a seam that already existed.
 | #17 | Change detection between scans | Verified against two **real** `ironcityit.com` reports |
 | #18 | Container smoke test | The image starts, refuses to start unauthenticated, runs as uid 10001 |
 
+## Also merged after the table above
+
+| PR | What |
+|---|---|
+| #21 | **D26** — MTA-STS reported "enforced" from the TXT record alone, so `testing`, `none` and a missing policy file all read as protected |
+| #22 | **D27** — `network_path` called "any hop answered" reaching the server, and reported a host that filters traceroute at `medium` |
+| #23 | **D28** — `resolver_performance` reported "this domain is down" at `high` when *the scanner* could not reach public resolvers |
+| #24 | Signed, expiring scan links — the replacement for "knowing the scan id is permission, forever" |
+| #25 | Free-scan trigger, rate limited per submitter *and* per source |
+
+All three module defects were found by asking what a low coverage number was
+hiding rather than by trying to raise it, and all three had the same shape:
+**reporting our own limitation as the client's problem.**
+
 ## Defects found and fixed
 
 | # | Severity | Defect |

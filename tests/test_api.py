@@ -878,3 +878,74 @@ def test_link_sharing_refuses_rather_than_disappearing_when_unconfigured(service
     client.post("/api/v1/tenants/acme/scans", json=a_report("s-1"))
     assert client.post("/api/v1/tenants/acme/scans/s-1/link").status_code == 503
     assert client.get("/api/v1/public/scans/anything").status_code == 503
+
+
+# ── the public request route ─────────────────────────────────────────────────
+
+
+@pytest.fixture
+def public(services, monkeypatch, clock):
+    """A deployment that can start scans and mint links."""
+    monkeypatch.setenv("DNSGUARD_LINK_SECRET", LINK_SECRET)
+    started: list[tuple[str, str]] = []
+    wired = Services.build(
+        store=services.store, clock=clock, dispatch=lambda d, s: started.append((d, s))
+    )
+    return TestClient(create_app(wired, authenticate=_refuse)), started
+
+
+def test_a_stranger_can_start_a_scan_and_is_handed_a_link(public):
+    client, started = public
+    accepted = client.post(
+        "/api/v1/public/scans", json={"email": "someone@acme.example", "domain": "acme.example"}
+    )
+    assert accepted.status_code == 202
+    body = accepted.json()
+    assert body["status"] == "queued"
+    assert started == [("acme.example", body["scan_id"])]
+
+    read = client.get(body["path"])
+    assert read.status_code == 200
+    assert read.json()["scan_id"] == body["scan_id"]
+
+
+def test_the_link_handed_back_does_not_carry_the_address(public):
+    client, _ = public
+    body = client.post(
+        "/api/v1/public/scans", json={"email": "someone@acme.example", "domain": "acme.example"}
+    ).json()
+    assert "someone@acme.example" not in client.get(body["path"]).text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"email": "someone@gmail.com", "domain": "acme.example"},
+        {"email": "not-an-email", "domain": "acme.example"},
+        {"email": "someone@acme.example", "domain": "not a domain"},
+        {"email": "someone@acme.example", "domain": "acme.example; rm -rf /"},
+    ],
+)
+def test_a_bad_request_is_refused_without_starting_anything(public, payload):
+    client, started = public
+    assert client.post("/api/v1/public/scans", json=payload).status_code == 400
+    assert started == []
+
+
+def test_the_public_route_is_rate_limited(public):
+    """The only route where a stranger can spend our resources."""
+    client, _ = public
+    body = {"email": "someone@acme.example", "domain": "acme.example"}
+    codes = [client.post("/api/v1/public/scans", json=body).status_code for _ in range(5)]
+    assert 429 in codes, codes
+
+
+def test_free_scans_refuse_rather_than_disappear_when_not_configured(services, monkeypatch):
+    """No dispatch wired means no way to run a scan. Accepting one anyway would
+    leave a record queued forever and a page polling it."""
+    monkeypatch.setenv("DNSGUARD_LINK_SECRET", LINK_SECRET)
+    client = TestClient(create_app(services, authenticate=_refuse))
+    response = client.post(
+        "/api/v1/public/scans", json={"email": "someone@acme.example", "domain": "acme.example"}
+    )
+    assert response.status_code == 503

@@ -54,6 +54,7 @@ currently serving real users. **VERIFIED**.
 | Asset inventory | `AssetSink` in `base.py`, populated by the discovery modules | **VERIFIED** — 20 assets on a live domain, 7 merged across two modules |
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
 | SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
+| Free-scan trigger | `dnsguard/trigger.py` | **VERIFIED** — validation, per-submitter *and* per-source rate limiting, dispatch injected |
 | Signed scan links | `dnsguard/links.py` | **VERIFIED** — expiring capability tokens; the replacement for "knowing the scan id is permission, forever" |
 | Web security policy | `deploy/web-headers.json`, `tools/render-headers.py` | **VERIFIED** — portable, renders to Caddy/nginx, parity with `firebase.json` enforced by test |
 | Scan ingest / retrieval | `dnsguard/scans.py` | **VERIFIED** as code+tests. Replaces `storeScanResults`; **not deployed, not cut over** |
@@ -357,7 +358,10 @@ could set.
 
 ### 7.2 Free-scan surfaces (VERIFIED)
 
-- `triggerDNSScan` — public, unauthenticated, `CORS *`. Rate limiting: **UNKNOWN**.
+- `triggerDNSScan` — public, unauthenticated, `CORS *`. Rate limiting: **UNKNOWN**,
+  and nothing in the repository implements any. Its replacement
+  (`dnsguard/trigger.py`) limits per submitter and per source, in the store, so
+  the defect is not carried across the migration.
 - `getScanStatus` — public, unauthenticated. Strips `email` from the response.
 - `storeScanResults` — **UNKNOWN whether authenticated**. `deploy.sh` deploys it
   `--no-allow-unauthenticated` but then instructs the operator to make all three
@@ -514,7 +518,7 @@ Every Firebase/Firestore/GCP reference in the repository, classified.
 | `.github/workflows/firebase-deploy.yml` | Hosting deploy; has never succeeded | **REMOVE** in Phase 4 |
 | `firebase.json` | Hosting config, CSP + security headers, rewrites | **MIGRATE, done for the part that matters** — the header/CSP policy now lives in `deploy/web-headers.json`, with `tools/render-headers.py` emitting Caddy and nginx snippets and a test asserting the two files still agree. The rewrites remain Firebase-specific and go in phase 4. |
 | `firestore.rules` | Firestore security rules | **REMOVE** in Phase 4; replaced by API-side authorisation |
-| `cloud-function/index.js` + `package.json` | `triggerDNSScan`, `storeScanResults`, `getScanStatus` | **MIGRATE, partly done** — `storeScanResults`/`getScanStatus` are reimplemented in `dnsguard/scans.py` (built, not cut over). Still to move: `triggerDNSScan`, the public unauthenticated read, and the only HubSpot integration in the product. |
+| `cloud-function/index.js` + `package.json` | `triggerDNSScan`, `storeScanResults`, `getScanStatus` | **MIGRATE — all three reimplemented, none cut over.** `storeScanResults`/`getScanStatus` → `dnsguard/scans.py`; the public read → `dnsguard/links.py`; `triggerDNSScan` → `dnsguard/trigger.py`. **Still only in the Cloud Function: the HubSpot integration**, which is a marketing concern rather than a product one and needs a decision about where it belongs. |
 | `.github/workflows/dns-analysis.yml` | `store` and `report-failure` jobs POST to `storeScanResults` | **MIGRATE** — repoint to the ingest API in Phase 3 |
 | `dashboard/public/index.html` | Loads Firebase JS SDK; reads Firestore directly | **MIGRATE** — read through the API instead |
 | `dashboard/public/console.html`, `console.js` | Talks to `*.run.app` / `*.cloudfunctions.net` | **MIGRATE** — repoint to the control-plane API |
@@ -696,7 +700,8 @@ Ordered by value, nonblocked first.
    also not dead: it is the multi-target entry point (IP, CIDR, URL, domain,
    hostname, file) that the architecture requires, while `tools/scan.py` is the
    single-domain one the workflow invokes.
-9. **Rate limiting** on the public trigger endpoint — currently **UNKNOWN**.
+9. **Decide where the HubSpot integration lives.** It is the last thing only the
+   Cloud Function does, and it is a marketing concern rather than a product one.
 
 ---
 
@@ -728,6 +733,7 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| The free-scan trigger limits per submitter *and* per source, survives a restart, and stores neither the address nor the source it counts | `pytest tests/test_trigger.py tests/test_api.py` — 41 + 74 passed | 2026-09-07 |
 | A signed link expires, cannot be repointed, and leaks nothing on refusal | `pytest tests/test_links.py tests/test_api.py` — 31 + 66 passed, including re-signing with the real secret as a control so the tamper tests cannot pass for the wrong reason | 2026-09-07 |
 | `resolver_performance` reports unmeasured rather than "domain is down" when the scanner cannot reach the resolvers | `pytest tests/test_resolver_performance.py` — 16 passed, benchmark and control both injected | 2026-09-07 |
 | `network_path` emits nothing above `info`, and reports a complete result on every early return | `pytest tests/test_network_path.py` — 17 passed, including the traceroute-timeout path that would previously have raised `KeyError` | 2026-09-07 |

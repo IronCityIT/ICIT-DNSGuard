@@ -59,6 +59,7 @@ from .resilience import BreakerRegistry, try_call
 from .scans import ScanService
 from .store import DocumentStore, JsonFileStore, MemoryStore
 from .tenancy import Site, Tenant, TenantDirectory
+from .trigger import ScanTrigger
 
 API_PREFIX = "/api/v1"
 
@@ -88,6 +89,13 @@ class RuleIn(BaseModel):
     precedence: int = 100
     redirect_to: str = ""
     enabled: bool = True
+
+
+class ScanRequestIn(BaseModel):
+    """A free-scan request from the public page."""
+
+    email: str
+    domain: str
 
 
 class ScanIn(BaseModel):
@@ -186,9 +194,15 @@ class Services:
     breakers: BreakerRegistry
     maintenance: MaintenanceRunner
     scans: ScanService
+    trigger: ScanTrigger | None
 
     @classmethod
-    def build(cls, store: DocumentStore | None = None, clock: Clock | None = None) -> Services:
+    def build(
+        cls,
+        store: DocumentStore | None = None,
+        clock: Clock | None = None,
+        dispatch: Callable[[str, str], None] | None = None,
+    ) -> Services:
         store = store or _default_store()
         clock = clock or Clock()
         audit = AuditLog(store, clock)
@@ -222,6 +236,16 @@ class Services:
             if os.environ.get("DNSGUARD_FETCH_FEEDS", "").lower() in ("1", "true", "yes")
             else None
         )
+        scans = ScanService(store=store, audit=audit, clock=clock)
+        # A trigger is wired only where the deployment supplies a way to start a
+        # pipeline. Without one, the public request route refuses rather than
+        # accepting a scan it has no means of running — which would leave a
+        # record queued forever and a page polling it.
+        trigger = (
+            ScanTrigger(scans=scans, store=store, dispatch=dispatch, clock=clock)
+            if dispatch is not None
+            else None
+        )
         maintenance = MaintenanceRunner(
             registry=feeds,
             fetcher=fetcher,
@@ -244,7 +268,8 @@ class Services:
             evidence=evidence,
             breakers=breakers,
             maintenance=maintenance,
-            scans=ScanService(store=store, audit=audit, clock=clock),
+            scans=scans,
+            trigger=trigger,
         )
 
 
@@ -690,6 +715,31 @@ def _register_routes(  # noqa: C901 - a route table; splitting it hides the surf
     # ── the one public path ─────────────────────────────────────────────────
 
     link_secret = os.environ.get("DNSGUARD_LINK_SECRET", "")
+
+    @app.post(API_PREFIX + "/public/scans", status_code=202)
+    def request_scan(body: ScanRequestIn, request: Request) -> dict[str, Any]:
+        """Start a free scan. Unauthenticated, by necessity.
+
+        The only route where a stranger can cause work to happen — a record
+        written and a pipeline dispatched. Rate limited per submitter *and* per
+        source, because either alone is trivially evaded.
+
+        202, not 201: the scan has been accepted and has not run yet. The caller
+        polls the link that comes back.
+        """
+        if svc.trigger is None:
+            raise HTTPException(
+                status_code=503, detail="free scans are not enabled on this deployment"
+            )
+        source = request.client.host if request.client else ""
+        accepted = svc.trigger.request(body.email, body.domain, source=source)
+
+        if link_secret:
+            token = sign_link(
+                svc.trigger.tenant_id, accepted["scan_id"], link_secret, svc.clock.now().timestamp()
+            )
+            accepted["path"] = f"{API_PREFIX}/public/scans/{token}"
+        return accepted
 
     @app.get(API_PREFIX + "/public/scans/{token}")
     def public_scan(token: str) -> dict[str, Any]:
