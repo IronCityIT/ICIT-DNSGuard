@@ -6,7 +6,14 @@ import pytest
 from base import Finding
 
 from dnsguard.alerts import AlertRule, AlertService, compute_metrics, default_rules
-from dnsguard.analytics import QueryEvent, event_from_decision, score, summarise, timeseries
+from dnsguard.analytics import (
+    RISK_LEVELS,
+    QueryEvent,
+    event_from_decision,
+    score,
+    summarise,
+    timeseries,
+)
 from dnsguard.audit import AuditLog
 from dnsguard.clock import FrozenClock
 from dnsguard.errors import NotFoundError, ValidationError
@@ -372,3 +379,105 @@ def test_the_default_rule_set_is_valid_and_small():
     assert 3 <= len(rules) <= 6, "a noisy default set teaches operators to ignore the product"
     assert all(r.description for r in rules)
     assert {r.metric for r in rules} <= set(compute_metrics([]))
+
+
+# ── overall risk is never better than the worst finding ──────────────────────
+#
+# Found in a real production report, not in review. A scan of ironcityit.com
+# returned a confirmed critical subdomain takeover and told the client:
+#
+#   "Email security for ironcityit.com is strong (A+). Mail should reach
+#    recipients reliably and the domain is well defended against impersonation.
+#    Overall risk is low (27/100)."
+#
+# Every clause was true and the paragraph was not. The score was dominated by
+# email posture — a critical finding adds 15 points, which on an otherwise clean
+# domain does not leave the "low" band — and the summary led with the grade in
+# every case, so the worst finding in the report never reached the sentence a
+# client actually reads.
+
+
+def clean_email():
+    return [finding(m, "info") for m in ("spf_audit", "dkim_audit", "dmarc_audit")]
+
+
+def test_a_critical_finding_makes_the_overall_risk_critical():
+    """The exact production case: perfect email, one confirmed takeover."""
+    posture = score(clean_email() + [finding("alias_takeover", "critical")], "example.com")
+    assert posture.email_grade == "A+", "the email posture really is perfect"
+    assert posture.risk_level == "critical"
+    assert posture.risk_score >= 80
+
+
+def test_a_high_finding_makes_the_overall_risk_at_least_high():
+    posture = score(clean_email() + [finding("subdomain_discovery", "high")], "example.com")
+    assert posture.risk_level == "high"
+
+
+def test_a_medium_finding_floors_the_risk_at_medium():
+    posture = score(clean_email() + [finding("dns_records", "medium")], "example.com")
+    assert posture.risk_level == "medium"
+
+
+def test_a_clean_posture_is_still_reported_as_clean():
+    """The floor must not inflate a domain that has nothing wrong with it — a
+    score that always reads badly is one nobody acts on."""
+    posture = score(clean_email(), "example.com")
+    assert posture.risk_level == "minimal"
+    assert posture.risk_score == 0
+
+
+def test_the_score_and_the_level_never_disagree():
+    """ "Overall risk is critical (27/100)" is incoherent. The floor raises the
+    score, not just the label, so the number and the word always agree."""
+    for severity in ("critical", "high", "medium", "low", "info"):
+        posture = score(clean_email() + [finding("alias_takeover", severity)], "example.com")
+        expected = next(lv for threshold, lv in RISK_LEVELS if posture.risk_score >= threshold)
+        assert posture.risk_level == expected, severity
+
+
+# ── the summary leads with what is urgent ────────────────────────────────────
+
+
+def test_the_summary_leads_with_a_critical_finding_not_the_email_grade():
+    posture = score(clean_email() + [finding("alias_takeover", "critical")], "example.com")
+    summary = posture.executive_summary
+    assert summary.startswith("example.com has 1 critical issue")
+    assert "critical (80/100)" in summary
+
+
+def test_a_strong_grade_is_context_for_a_serious_finding_not_a_softener():
+    """The grade still appears — it is true and useful — but after the problem,
+    and without the reassuring gloss."""
+    posture = score(clean_email() + [finding("alias_takeover", "critical")], "example.com")
+    summary = posture.executive_summary
+    assert "Email authentication is strong (A+)" in summary
+    assert "well defended against impersonation" not in summary
+
+
+def test_a_high_finding_also_leads(monkeypatch):
+    posture = score(clean_email() + [finding("subdomain_discovery", "high")], "example.com")
+    assert posture.executive_summary.startswith("example.com has 1 high-severity issue")
+
+
+def test_both_counts_are_named_when_both_are_present():
+    findings = clean_email() + [
+        finding("alias_takeover", "critical"),
+        finding("subdomain_discovery", "high"),
+    ]
+    summary = score(findings, "example.com").executive_summary
+    assert "1 critical issue(s)" in summary
+    assert "1 further high-severity issue(s)" in summary
+
+
+def test_a_clean_domain_still_gets_the_reassuring_summary():
+    """Nothing urgent, so the grade-led wording is the honest one."""
+    summary = score(clean_email(), "example.com").executive_summary
+    assert "is strong (A+)" in summary
+    assert "minimal (0/100)" in summary
+
+
+def test_an_unassessed_email_posture_is_still_stated():
+    summary = score([finding("alias_takeover", "critical")], "example.com").executive_summary
+    assert "1 critical issue(s)" in summary
+    assert "Email authentication was not assessed" in summary

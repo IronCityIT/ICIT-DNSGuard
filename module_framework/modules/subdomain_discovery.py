@@ -251,25 +251,20 @@ class SubdomainDiscovery(ScanModule):
                 )
             )
 
-        dangling = [h for h in live if h["aliases"] and not h["addresses"]]
-        if dangling:
-            findings.append(
-                Finding(
-                    module=self.name,
-                    target=host,
-                    severity="high",
-                    title="Aliases point at destinations that do not resolve",
-                    detail=(
-                        f"{len(dangling)} host(s) alias a destination that returns no address. "
-                        "If the destination is a de-provisioned hosting account, whoever registers "
-                        "that name next can serve content on your domain."
-                    ),
-                    evidence={
-                        "hosts": dangling,
-                        "remediation": "Remove the alias, or re-claim the destination.",
-                    },
-                )
-            )
+        # Dangling aliases are deliberately NOT reported here. `alias_takeover`
+        # follows each one to its destination and says whether it is claimable,
+        # by whom, and with what confidence — where this could only hedge ("if
+        # the destination is a de-provisioned hosting account…"), which is the
+        # whole reason that module exists.
+        #
+        # Emitting both put the same host in a client's report twice, at two
+        # severities, from two modules, one of them saying "confirmed critical"
+        # and the other "high, if". A reader has to work out that they are the
+        # same problem, and the weaker wording undermines the stronger one.
+        #
+        # The hosts are still in the inventory below, so nothing is lost if
+        # alias_takeover is deselected — the finding is, and a test asserts the
+        # two modules stay in the same groups so that cannot happen by accident.
 
         if len(live) > LARGE_SURFACE:
             findings.append(

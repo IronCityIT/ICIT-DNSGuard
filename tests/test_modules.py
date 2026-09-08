@@ -229,7 +229,14 @@ def test_dns_records_module_reports_the_inventory(monkeypatch):
 # ── Subdomain discovery ──────────────────────────────────────────────────────
 
 
-def test_dangling_alias_is_high(monkeypatch):
+def test_a_dangling_alias_is_reported_once_by_the_module_that_verifies_it(monkeypatch):
+    """`alias_takeover` follows an alias to its destination and says whether it
+    is claimable and by whom. This module could only hedge — "if the destination
+    is a de-provisioned hosting account" — so emitting both put one host in a
+    client's report twice, at two severities, with the weaker wording
+    undermining the stronger.
+
+    The host stays in the inventory; only the duplicate finding is gone."""
     monkeypatch.setattr(subdomain_discovery, "make_resolver", lambda *a, **k: object())
     monkeypatch.setattr(
         subdomain_discovery, "_crtsh_names", lambda *a, **k: ({"old.example.com"}, "ok")
@@ -244,9 +251,24 @@ def test_dangling_alias_is_high(monkeypatch):
 
     monkeypatch.setattr(subdomain_discovery, "query", fake_query)
     findings = subdomain_discovery.SubdomainDiscovery().run(one("example.com"), {})
-    dangling = [f for f in findings if "do not resolve" in f.title]
-    assert len(dangling) == 1
-    assert dangling[0].severity == "high"
+
+    assert not [f for f in findings if "do not resolve" in f.title]
+    inventory = next(f for f in findings if f.title == "Public host inventory collected")
+    assert "old.example.com" in {h["host"] for h in inventory.evidence["hosts"]}
+
+
+def test_the_two_surface_modules_always_run_together():
+    """Removing the duplicate is only safe while `alias_takeover` runs wherever
+    `subdomain_discovery` does. If the groups ever diverge, dangling aliases
+    would stop being reported at all in the group that lost it."""
+    import registry
+
+    modules = registry.discover()
+    discovery = set(modules["subdomain_discovery"].groups)
+    takeover = set(modules["alias_takeover"].groups)
+    assert discovery <= takeover, (
+        f"groups where dangling aliases go unreported: {discovery - takeover}"
+    )
 
 
 def test_sensitive_hostnames_are_flagged(monkeypatch):
