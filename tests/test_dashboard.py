@@ -375,3 +375,46 @@ def test_the_scans_panel_builds_no_markup_from_stored_data(console_js):
     panel = console_js[console_js.index("function renderScans") : console_js.index("var RENDERERS")]
     assert ".innerHTML" not in panel
     assert "insertAdjacentHTML" not in panel
+
+
+# ── the read seam: Firestore today, the control plane on cutover ─────────────
+
+
+def test_the_page_reads_through_one_seam_rather_than_three_call_sites(index):
+    """Three direct Firestore reads meant three places to change on cutover day,
+    which is three places to get it wrong under time pressure."""
+    assert index.count("db.collection('scans')") == 1
+    assert "async function readScan(ref)" in index
+
+
+def test_firestore_stays_the_default_until_something_is_configured(index):
+    """Nothing about the live page changes until somebody points it somewhere.
+    The switch is then one line of config, not a deploy of new behaviour."""
+    assert "window.DNSGUARD_API_BASE || ''" in index
+    assert "function usingApi() { return API_BASE !== ''; }" in index
+
+
+def test_a_signed_token_and_a_bare_id_are_not_interchangeable(index):
+    """A token is a capability that expires; an id is not. Silently retrying one
+    link shape against the other store would quietly reintroduce "knowing the id
+    is permission, forever"."""
+    assert "old format and can no longer be opened" in index
+
+
+def test_both_link_shapes_are_accepted_from_the_url(index):
+    assert "urlParams.get('token')" in index
+    assert "urlParams.get('scan')" in index
+
+
+def test_both_trigger_responses_are_accepted(index):
+    """The control plane answers 202 with a signed path; the Cloud Function
+    answers 200 with {success, scan_id}. Accepting both means the cutover does
+    not need this page changed at the same moment."""
+    assert "result.success || result.scan_id" in index
+
+
+def test_whoever_configures_the_api_is_warned_about_the_csp(index):
+    """An origin missing from connect-src is blocked by the browser and logged
+    to a console nobody is watching — the page simply stops working."""
+    assert "connect-src" in index
+    assert "deploy/web-headers.json" in index

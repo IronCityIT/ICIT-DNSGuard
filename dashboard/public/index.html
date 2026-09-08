@@ -330,11 +330,75 @@
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
         
+        // ── the read seam ──────────────────────────────────────────────
+        //
+        // This page currently reads Firestore directly. Firestore is retired
+        // from the target architecture, and the control plane now serves the
+        // same scan through a signed, expiring link. Rather than rewrite the
+        // page on cutover day, both paths live here behind one function and the
+        // choice is configuration:
+        //
+        //   window.DNSGUARD_API_BASE unset  → Firestore, exactly as today
+        //   window.DNSGUARD_API_BASE set    → the control plane
+        //
+        // Unset is the default deliberately: nothing about the live page changes
+        // until somebody points it somewhere, and the switch is then one line of
+        // config rather than a deploy of new behaviour.
+        //
+        // NOTE for whoever sets it: unless the API is same-origin, its origin
+        // has to be added to connect-src in deploy/web-headers.json, or the
+        // browser blocks the request and logs to a console nobody is watching.
+        const API_BASE = window.DNSGUARD_API_BASE || '';
+
+        function usingApi() { return API_BASE !== ''; }
+
+        /* The signed token out of the path the control plane hands back. Reading
+           the last segment rather than parsing the whole URL keeps this working
+           if the prefix ever moves. */
+        function tokenFromPath(path) {
+            if (!path) { return ''; }
+            const parts = String(path).split('/');
+            return parts[parts.length - 1] || '';
+        }
+
+        /* One scan, from whichever store is configured.
+           Returns the scan document, or null when there is nothing there.
+           A token addresses a scan on the API; an id addresses one in Firestore.
+           They are not interchangeable — a signed token is a capability and a
+           bare id is not — so a link of the wrong shape for the configured
+           store is reported rather than quietly retried against the other. */
+        async function readScan(ref) {
+            if (usingApi()) {
+                if (!ref.token) {
+                    throw new Error('This link is in the old format and can no longer be opened.');
+                }
+                const response = await fetch(
+                    API_BASE + '/api/v1/public/scans/' + encodeURIComponent(ref.token));
+                if (response.status === 404) { return null; }
+                if (!response.ok) { throw new Error('The assessment could not be loaded.'); }
+                return await response.json();
+            }
+            if (!ref.id) { return null; }
+            // A direct document read, not a collection query: `get` can be
+            // permitted by the security rules while `list` stays denied, which
+            // is what stops anyone enumerating every scan ever run.
+            const doc = await db.collection('scans').doc(ref.id).get();
+            return doc.exists ? doc.data() : null;
+        }
+
         const TRIGGER_URL = 'https://us-east5-icit-dnsguard.cloudfunctions.net/triggerDNSScan';
         let severityChart, scoreChart;
         
         const urlParams = new URLSearchParams(window.location.search);
-        const scanId = urlParams.get('scan') || urlParams.get('id');
+        // Two link shapes, one per store. `?scan=` is a bare document id, which
+        // is what the Firestore path has always used. `?token=` is a signed,
+        // expiring capability naming its own scan — the shape the control plane
+        // issues, and the one that stops a link being permission forever.
+        const scanRef = {
+            id: urlParams.get('scan') || urlParams.get('id') || '',
+            token: urlParams.get('token') || ''
+        };
+        const hasScanRef = Boolean(scanRef.id || scanRef.token);
         
         function extractDomain(email) {
             if (!email || !email.includes('@')) return null;
@@ -357,9 +421,9 @@
         
         document.addEventListener('DOMContentLoaded', () => {
             initCharts();
-            if (scanId) {
+            if (hasScanRef) {
                 document.getElementById('demo-banner').classList.add('hidden');
-                loadScan(scanId);
+                loadScan(scanRef);
             } else {
                 loadDemoData();
             }
@@ -378,19 +442,16 @@
             });
         }
         
-        async function loadScan(id) {
+        async function loadScan(ref) {
             document.getElementById('loading').classList.add('active');
             document.getElementById('results').classList.add('hidden');
             try {
-                // A direct document read, not a collection query. The trigger
-                // function writes the record at scans/{scan_id}, so the id is
-                // all that is needed — and a `get` can be permitted by the
-                // security rules while `list` stays denied, which is what stops
-                // anyone enumerating every scan ever run.
-                const doc = await db.collection('scans').doc(id).get();
-                if (doc.exists) { displayResults(doc.data()); }
+                const data = await readScan(ref);
+                if (data) { displayResults(data); }
                 else { showScanError('That assessment could not be found. The link may have expired.'); }
-            } catch (error) { console.error('Error:', error); }
+            } catch (error) {
+                showScanError(error.message || 'That assessment could not be loaded.');
+            }
             document.getElementById('loading').classList.remove('active');
             document.getElementById('results').classList.remove('hidden');
         }
@@ -400,8 +461,11 @@
             // demo record is absent the page keeps its static demo banner
             // rather than failing — this is decoration, not a load-bearing read.
             try {
-                const doc = await db.collection('scans').doc('demo-scan').get();
-                if (doc.exists) { displayResults(doc.data()); }
+                // Firestore only: the demo record is decoration and there is no
+                // signed link for it. On the API path the static banner stands.
+                if (usingApi()) { return; }
+                const data = await readScan({ id: 'demo-scan' });
+                if (data) { displayResults(data); }
             } catch (e) { console.log('Demo load:', e); }
         }
         
@@ -586,18 +650,27 @@
             document.getElementById('results').classList.add('hidden');
             
             try {
-                const resp = await fetch(TRIGGER_URL, {
+                const target = usingApi() ? API_BASE + '/api/v1/public/scans' : TRIGGER_URL;
+                const resp = await fetch(target, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email, domain })
                 });
                 const result = await resp.json();
-                if (result.success) {
+                // The control plane answers 202 with the scan and a signed path;
+                // the Cloud Function answers 200 with {success, scan_id}. Both
+                // are accepted so the cutover does not need this page changed.
+                const started = resp.ok && (result.success || result.scan_id);
+                if (started) {
                     showStatusPanel('var(--gold)', '\u2705', 'Assessment started', domain,
                                     'Results will appear in 30-60 seconds.', 'Refresh Results');
-                    setTimeout(() => pollForResults(result.scan_id, domain), 5000);
+                    var ref = {
+                        id: result.scan_id || '',
+                        token: tokenFromPath(result.path)
+                    };
+                    setTimeout(() => pollForResults(ref, domain), 5000);
                 } else {
-                    alert('Error: ' + (result.error || 'Failed to start scan'));
+                    alert('Error: ' + (result.error || result.detail || 'Failed to start scan'));
                 }
             } catch (err) { alert('Error: ' + err.message); }
             btn.disabled = false;
@@ -651,10 +724,11 @@
             document.getElementById('loading').classList.add('active');
         }
 
-        async function pollForResults(scanId, domain) {
-            // Without a scan_id there is nothing to poll — the previous build
-            // called this with `undefined` and silently span until it gave up.
-            if (!scanId) {
+        async function pollForResults(ref, domain) {
+            // Without something to address the scan there is nothing to poll — the
+            // previous build called this with `undefined` and silently span
+            // until it gave up.
+            if (!ref || (!ref.id && !ref.token)) {
                 showScanError('The assessment could not be tracked. Please try again.');
                 return;
             }
@@ -662,9 +736,8 @@
             const poll = async () => {
                 attempts++;
                 try {
-                    const doc = await db.collection('scans').doc(scanId).get();
-                    if (doc.exists) {
-                        const data = doc.data();
+                    const data = await readScan(ref);
+                    if (data) {
                         // Terminal failure: the workflow always writes one now, so
                         // this branch is reachable instead of hanging.
                         if (data.status === 'failed') {

@@ -566,7 +566,10 @@ anything is switched, and nothing is deleted until the replacement is proven.**
   scan, and it grants one scan rather than the ability to enumerate the
   collection.
 - **Phase 3 — cut over.** `dns-analysis.yml` writes to both stores, then to the
-  new one only. Dashboard reads through the API. Existing 34 scan documents are
+  new one only. The dashboard already reads through a seam — setting
+  `window.DNSGUARD_API_BASE` switches it, and its origin must be added to
+  `connect-src` in `deploy/web-headers.json` at the same time or the browser
+  blocks the request silently. Existing 34 scan documents are
   **exported and imported, then reconciled** before the Firestore path is
   switched off — `tools/backup.py reconcile` is that step, and it compares
   document by document rather than by count, because equal counts of different
@@ -744,6 +747,7 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| Both read paths behave correctly | Driven through a shim: Firestore mode returns the document / null; API mode fetches `/api/v1/public/scans/{token}`, returns null on 404, refuses a legacy id and a 500 | 2026-09-08 |
 | A restore rehearsal, on real data, with the audit chain intact afterwards | Two genuine `ironcityit.com` scans ingested, exported (4 docs), restored into an empty store, reconciled: `4 document(s) match the archive exactly`; restored audit chain `valid: True`; the critical takeover finding preserved | 2026-09-08 |
 | An archive edited after export is detected | Edited an audit record's `actor` in the real archive → `audit/000000000001 does not match its manifest hash`, exit 1 | 2026-09-08 |
 | Removing the hosting workflow stopped the red check on `main` | Merge commit `b61d218` triggered **only** CI — no `Deploy to Firebase Hosting` run, after 55 consecutive failures | 2026-09-08 |
