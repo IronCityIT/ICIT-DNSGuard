@@ -51,6 +51,8 @@ from .exceptions_policy import ExceptionService
 from .feeds import FeedFetcher, FeedRegistry
 from .fetcher import HttpFetcher
 from .identity import CredentialRegistry
+from .links import sign as sign_link
+from .links import verify as verify_link
 from .maintenance import MaintenanceRunner
 from .policy import PolicyService, Rule
 from .resilience import BreakerRegistry, try_call
@@ -684,6 +686,67 @@ def _register_routes(  # noqa: C901 - a route table; splitting it hides the surf
             "degraded": result.degraded,
             "reason": result.error if result.degraded else "",
         }
+
+    # ── the one public path ─────────────────────────────────────────────────
+
+    link_secret = os.environ.get("DNSGUARD_LINK_SECRET", "")
+
+    @app.get(API_PREFIX + "/public/scans/{token}")
+    def public_scan(token: str) -> dict[str, Any]:
+        """One scan, to whoever holds a valid signed link. No authentication.
+
+        This is the free-scan funnel's read path: somebody with no account, who
+        will never have one, coming back to their own result. The capability is
+        in the token — it names its own tenant and scan and carries an expiry —
+        so nothing here reads a tenant from the caller.
+
+        Mounted always, refusing always, when no secret is configured. A route
+        that quietly disappears is a route somebody assumes is protecting them.
+        """
+        if not link_secret:
+            raise HTTPException(
+                status_code=503,
+                detail="link sharing is not configured on this deployment",
+            )
+        try:
+            link = verify_link(token, link_secret, svc.clock.now().timestamp())
+        except ValidationError as exc:
+            # 404, not 403: whether a scan exists behind an invalid token is not
+            # something an unauthenticated caller should be able to learn.
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        found = svc.scans.get(link.tenant_id, link.scan_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail="this link is not valid")
+        # The submitter's address lives in its own collection and is not read
+        # here. This endpoint is public; it returns the scan and nothing else.
+        return found
+
+    @app.post(API_PREFIX + "/tenants/{tenant_id}/scans/{scan_id}/link", status_code=201)
+    def mint_link(scan_id: str, scope: tuple = Depends(scoped)) -> dict[str, Any]:
+        """Mint a shareable link to one scan. Operator role.
+
+        Minting is gated even though reading is not: handing somebody a link is
+        granting access, and the gate belongs at the point where that decision
+        is made rather than at the point where it is exercised.
+        """
+        tenant_id, caller = scope
+        require(caller, OPERATOR)
+        if not link_secret:
+            raise HTTPException(
+                status_code=503, detail="link sharing is not configured on this deployment"
+            )
+        if svc.scans.get(tenant_id, scan_id) is None:
+            raise HTTPException(status_code=404, detail="no such scan")
+        token = sign_link(tenant_id, scan_id, link_secret, svc.clock.now().timestamp())
+        svc.audit.append(
+            tenant_id=tenant_id,
+            actor=caller.actor,
+            action="scan.link_minted",
+            subject=f"scan/{scan_id}",
+            detail={"expires_in_days": 90},
+        )
+        return {"token": token, "path": f"{API_PREFIX}/public/scans/{token}"}
 
     # ── scans ───────────────────────────────────────────────────────────────
 
