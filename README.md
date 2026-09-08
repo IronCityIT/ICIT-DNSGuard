@@ -235,6 +235,9 @@ ICIT-DNSGuard/
 │   ├── maintain.py           # the maintenance pass, for cron
 │   ├── check-exposure.py     # re-check the live Firestore exposure boundary
 │   ├── check-dns-exposure.py # re-check our own aliases against dns-baseline.json
+│   ├── compare.py            # what moved between two assessments
+│   ├── backup.py             # export / verify / restore / reconcile
+│   ├── credential.py         # mint control-plane credentials
 │   └── gates.sh              # every quality gate, one script
 ├── dashboard/public/
 │   ├── index.html            # public free-scan page
