@@ -55,6 +55,7 @@ currently serving real users. **VERIFIED**.
 | Control plane | `dnsguard/` | **VERIFIED** as code+tests, **not deployed** |
 | SQL document store | `dnsguard/sqlstore.py` | Contract **VERIFIED** on SQLite; MariaDB dialect **NOT VERIFIED** — never executed |
 | Free-scan trigger | `dnsguard/trigger.py` | **VERIFIED** — validation, per-submitter *and* per-source rate limiting, dispatch injected |
+| Backup / restore / reconcile | `dnsguard/backup.py`, `tools/backup.py` | **VERIFIED** — rehearsed end to end on real data; tamper detection includes a repaired manifest |
 | Signed scan links | `dnsguard/links.py` | **VERIFIED** — expiring capability tokens; the replacement for "knowing the scan id is permission, forever" |
 | Web security policy | `deploy/web-headers.json`, `tools/render-headers.py` | **VERIFIED** — portable, renders to Caddy/nginx, parity with `firebase.json` enforced by test |
 | Scan ingest / retrieval | `dnsguard/scans.py` | **VERIFIED** as code+tests. Replaces `storeScanResults`; **not deployed, not cut over** |
@@ -566,8 +567,10 @@ anything is switched, and nothing is deleted until the replacement is proven.**
   collection.
 - **Phase 3 — cut over.** `dns-analysis.yml` writes to both stores, then to the
   new one only. Dashboard reads through the API. Existing 34 scan documents are
-  **exported and imported, then reconciled by count and checksum** before the
-  Firestore path is switched off.
+  **exported and imported, then reconciled** before the Firestore path is
+  switched off — `tools/backup.py reconcile` is that step, and it compares
+  document by document rather than by count, because equal counts of different
+  documents is exactly the failure a count would miss.
 - **Phase 4 — retire.** `firebase-deploy.yml` is **done** (it was removed early:
   it had never functioned, so removing it lost no capability and stopped a
   permanently red check training people to ignore red checks). Still to delete:
@@ -666,8 +669,10 @@ broaden `gate_secrets` so the pattern cannot recur.
 - Whether any restore has ever been tested.
 
 **TARGET:** MariaDB logical backups on a defined schedule to a separate NAS
-volume, with restore rehearsed and evidenced; artifact volume snapshotted;
-documented RPO/RTO. **None of these figures are set — do not invent them.**
+volume; artifact volume snapshotted; documented RPO/RTO. **None of those figures
+are set — do not invent them.** The *restore rehearsal* part is no longer target:
+`tools/backup.py verify` is meant to run on a schedule, because a backup nobody
+has checked is a hypothesis.
 
 ---
 
@@ -739,6 +744,8 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| A restore rehearsal, on real data, with the audit chain intact afterwards | Two genuine `ironcityit.com` scans ingested, exported (4 docs), restored into an empty store, reconciled: `4 document(s) match the archive exactly`; restored audit chain `valid: True`; the critical takeover finding preserved | 2026-09-08 |
+| An archive edited after export is detected | Edited an audit record's `actor` in the real archive → `audit/000000000001 does not match its manifest hash`, exit 1 | 2026-09-08 |
 | Removing the hosting workflow stopped the red check on `main` | Merge commit `b61d218` triggered **only** CI — no `Deploy to Firebase Hosting` run, after 55 consecutive failures | 2026-09-08 |
 | The console's change report reads coherently on a baseline and on a regression | Rendered through a DOM shim: baseline shows "found"/"N finding(s) recorded", a regression shows "worsened … was medium" | 2026-09-08 |
 | The free-scan trigger limits per submitter *and* per source, survives a restart, and stores neither the address nor the source it counts | `pytest tests/test_trigger.py tests/test_api.py` — 41 + 74 passed | 2026-09-07 |
