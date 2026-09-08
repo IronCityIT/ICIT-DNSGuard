@@ -317,6 +317,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Checkout FIRST. actions/checkout defaults to clean: true, which runs
+      # `git clean -ffdx` and would delete an artifact downloaded before it.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Download report
         uses: actions/download-artifact@v4
         with:
@@ -330,10 +338,20 @@ jobs:
           CLIENT_NAME: ${{ needs.analyze.outputs.client_name }}
           DOMAIN: ${{ needs.analyze.outputs.domain }}
           CONSENSUS_STATUS: ${{ needs.ai-consensus.result }}
+          # The engine's actual analysis, not just whether its job passed. Its
+          # declared output (see consensus-engine/.github/workflows/analyze.yml)
+          # is `consensus_b64`, empty when the analysis failed.
+          CONSENSUS_B64: ${{ needs.ai-consensus.outputs.consensus_b64 }}
         run: |
           set -euo pipefail
           REPORT=$(find incoming -maxdepth 2 -name '*.json' ! -name '*stderr*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
           if [ -z "$REPORT" ]; then echo "::error::no report in artifact"; exit 1; fi
+
+          # Fold the consensus into the report before the routing fields are
+          # added. Vendor names are stripped there; a failed analysis leaves the
+          # report untouched rather than writing an empty AI section.
+          python3 tools/enrich.py --report "$REPORT" -o enriched.json
+          REPORT=enriched.json
           # The dashboard renders straight off this document, so the report's own
           # shape is preserved and the routing fields are added alongside it.
           jq --arg sid "$SCAN_ID" \
