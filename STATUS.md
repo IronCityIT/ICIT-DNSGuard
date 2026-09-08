@@ -760,3 +760,42 @@ holding it in parity with `firebase.json` while both exist.
 hosting deploy at all**. That is a truer description of the position than a
 workflow that pretended to be one. The live site continues to serve the last
 hand-deployed build, exactly as it did while the workflow existed.
+
+
+---
+
+# Production end-to-end — 2026-09-08
+
+The scan pipeline was dispatched against our own domain — the same thing the
+Monday cron does unattended — to verify the new comparison step for real rather
+than claiming it from local runs.
+
+**Run `34193523489`, `workflow_dispatch`, `ironcityit.com`:**
+
+| Job | Result |
+|---|---|
+| DNS Analysis | ✅ success |
+| AI Consensus Analysis | ✅ success |
+| Store Results | ✅ success |
+| Report Failure | correctly skipped |
+
+Artifacts: `dnsguard-report-*`, `dnsguard-comparison-*`, `consensus-result-*`,
+`dnsguard-diagnostics-*`.
+
+The comparison step, in production:
+
+```
+ironcityit.com: nothing got worse since dnsguard-34127879755
+  unchanged: 9
+```
+
+It located an earlier assessment **of the same domain**, downloaded its artifact,
+and compared — which is the whole thing the selection logic exists to get right.
+Nine findings unchanged, nothing worse. The `vpn.ironcityit.com` takeover is among
+the unchanged: still open, correctly not reported as a new regression.
+
+## One blocker retired by evidence
+
+`STATUS` has listed the **`ai-consensus` job** as blocked on four missing API
+keys since the August run, then corrected to "the secrets exist but it has never
+run". It ran, and it succeeded. That entry is closed.
