@@ -156,6 +156,16 @@ EMAIL_WEIGHTS = {"spf_audit": 40, "dkim_audit": 30, "dmarc_audit": 30}
 GRADES = ((90, "A+"), (80, "A"), (70, "B"), (60, "C"), (40, "D"), (0, "F"))
 RISK_LEVELS = ((80, "critical"), (60, "high"), (40, "medium"), (20, "low"), (0, "minimal"))
 
+# The floor a single finding puts under the overall risk, matching the
+# thresholds above so score and level never disagree.
+#
+# Without this the score is dominated by email posture and severities only nudge
+# it: a domain with perfect email and a confirmed subdomain takeover scored 27 —
+# "low" — and the summary told the client they were well defended. The rule is
+# now one anybody can check: **overall risk is never better than your worst
+# problem.** A critical finding means critical risk, whatever else is clean.
+SEVERITY_FLOOR = {"critical": 80, "high": 60, "medium": 40, "low": 20, "info": 0}
+
 
 @dataclass
 class Posture:
@@ -195,6 +205,12 @@ def score(findings: builtins.list[Any], domain: str = "") -> Posture:
     risk = 0 if not available else 100 - email_score
     for severity, count in by_severity.items():
         risk += SEVERITY_RISK.get(severity, 0) * count
+
+    # Never better than the worst finding. Email is one part of a posture and it
+    # was drowning out everything else — a critical finding adds 15 points, which
+    # on an otherwise clean domain is not enough to leave the "low" band.
+    worst = _worst_severity(findings)
+    risk = max(risk, SEVERITY_FLOOR.get(worst, 0))
     risk = max(0, min(100, risk))
 
     grade = next(g for threshold, g in GRADES if email_score >= threshold)
@@ -231,14 +247,42 @@ def _credit(worst: str) -> float:
 def _summary(
     domain: str, grade: str, risk: int, level: str, by_severity: Counter[str], scored_email: bool
 ) -> str:
-    subject = domain or "this domain"
-    urgent = by_severity.get("critical", 0) + by_severity.get("high", 0)
+    """The sentence a client reads first, and often the only one.
 
+    It leads with whatever is most urgent. The previous version led with the
+    email grade in every case, which produced "Email security is strong (A+).
+    Mail should reach recipients reliably and the domain is well defended
+    against impersonation." on a report carrying a confirmed subdomain takeover.
+    Every clause of that was true and the paragraph as a whole was not.
+    """
+    subject = domain or "this domain"
+    critical = by_severity.get("critical", 0)
+    high = by_severity.get("high", 0)
+
+    email_note = (
+        f" Email authentication is {_email_phrase(grade)} ({grade})."
+        if scored_email
+        else " Email authentication was not assessed in this scan."
+    )
+
+    # Urgent findings lead, whatever the email grade says. A strong grade is
+    # context for a serious finding, never a softener for one.
+    if critical:
+        return (
+            f"{subject} has {critical} critical issue(s) needing immediate attention"
+            + (f" and {high} further high-severity issue(s)" if high else "")
+            + f". Overall risk is {level} ({risk}/100)."
+            + email_note
+        )
+    if high:
+        return (
+            f"{subject} has {high} high-severity issue(s) worth addressing now. "
+            f"Overall risk is {level} ({risk}/100)." + email_note
+        )
     if not scored_email:
         return (
-            f"{urgent} issue(s) needing attention were found for {subject}. "
-            f"Overall risk is {level} ({risk}/100). Email authentication was not "
-            "assessed in this scan."
+            f"No urgent issues were found for {subject}. "
+            f"Overall risk is {level} ({risk}/100)." + email_note
         )
     if grade in ("A+", "A"):
         return (
@@ -249,7 +293,7 @@ def _summary(
     if grade == "B":
         return (
             f"Email security for {subject} is good ({grade}) with room to improve. "
-            f"{urgent} issue(s) are worth addressing. Overall risk is {level} ({risk}/100)."
+            f"Overall risk is {level} ({risk}/100)."
         )
     if grade == "C":
         return (
@@ -260,8 +304,19 @@ def _summary(
     return (
         f"Email security for {subject} needs immediate attention ({grade}). Mail is "
         f"likely being filtered and anyone can send mail claiming to be this domain. "
-        f"{urgent} issue(s) are urgent. Overall risk is {level} ({risk}/100)."
+        f"Overall risk is {level} ({risk}/100)."
     )
+
+
+def _email_phrase(grade: str) -> str:
+    return {
+        "A+": "strong",
+        "A": "strong",
+        "B": "good",
+        "C": "in need of attention",
+        "D": "weak",
+        "F": "in need of immediate attention",
+    }.get(grade, "unassessed")
 
 
 def _quick_wins(findings: builtins.list[Any], limit: int = 3) -> builtins.list[str]:
