@@ -117,6 +117,10 @@
     return el("div", { className: "banner " + kind, text: message });
   }
 
+  // Worst first, matching dnsguard/diff.py, so the summary reads in the order
+  // somebody would act in.
+  var ORDERED_OUTCOMES = ["worsened", "new", "resolved", "improved", "unchanged"];
+
   function sevPill(severity) {
     var value = String(severity || "info").toLowerCase();
     return el("span", { className: "sev " + value, text: value });
@@ -994,6 +998,160 @@
 
   // ── tabs ───────────────────────────────────────────────────────────
 
+  /* Scans, and what moved between them.
+
+     The headline is `regressed` rather than a count, because "did anything get
+     worse" is the question somebody opens this tab to answer. A count of changes
+     answers a different one and reads as alarming when most of them are
+     improvements. */
+  function renderScans(target) {
+    load(target, "scans", function () { return api(tenantPath("/scans?limit=25")); },
+      function (data) {
+        var scans = data.scans || [];
+        if (!scans.length) {
+          return empty("No assessments have been stored for this client yet.");
+        }
+        return [
+          el("div", { className: "table-wrap" }, [
+            el("table", {}, [
+              el("thead", {}, [el("tr", {}, [
+                el("th", { text: "Target" }), el("th", { text: "Status" }),
+                el("th", { text: "Findings" }), el("th", { text: "Received" }),
+                el("th", { text: "" })
+              ])]),
+              el("tbody", {}, scans.map(function (scan) { return scanRow(scan, target); }))
+            ])
+          ]),
+          el("div", { className: "detail", id: "scan-detail" })
+        ];
+      });
+  }
+
+  function scanRow(scan, panel) {
+    var findings = (scan.findings || []).length;
+    return el("tr", {}, [
+      el("td", { text: scan.target || scan.domain || "—" }),
+      el("td", {}, [el("span", {
+        className: "tag " + (scan.status === "failed" ? "stale" : "live"),
+        text: scan.status || "unknown"
+      })]),
+      el("td", { text: String(findings) }),
+      el("td", { className: "small", text: when(scan.received_at) }),
+      el("td", {}, [
+        el("button", {
+          className: "small", text: "What changed",
+          on: { click: function () { showChanges(scan.scan_id); } }
+        }),
+        el("button", {
+          className: "small", text: "Share link",
+          on: { click: function () { mintLink(scan.scan_id); } }
+        })
+      ])
+    ]);
+  }
+
+  function showChanges(scanId) {
+    var detail = $("scan-detail");
+    if (!detail) { return; }
+    load(detail, "changes",
+      function () { return api(tenantPath("/scans/" + encodeURIComponent(scanId) + "/changes")); },
+      function (data) { return changeReport(data); });
+  }
+
+  function changeReport(data) {
+    var nodes = [];
+    if (data.baseline) {
+      // Every finding on a first scan is technically new. Saying so turns "here
+      // is where you stand" into "everything just broke".
+      nodes.push(banner("ok", "This is the first assessment of this target — a baseline, " +
+                              "not a set of new problems."));
+    } else {
+      nodes.push(banner(data.regressed ? "bad" : "ok",
+        data.regressed ? "Something got worse since the previous assessment."
+                       : "Nothing got worse since the previous assessment."));
+    }
+
+    var summary = data.summary || {};
+    if (data.baseline) {
+      // The five-outcome summary on a baseline is one real number and four
+      // zeroes, and four zeroes read as reassurance that was never measured.
+      nodes.push(el("div", { className: "row" }, [
+        el("span", { className: "tag", text: (summary.new || 0) + " finding(s) recorded" })
+      ]));
+    } else {
+      nodes.push(el("div", { className: "row" }, ORDERED_OUTCOMES.map(function (outcome) {
+        return el("span", { className: "tag", text: outcome + ": " + (summary[outcome] || 0) });
+      })));
+    }
+
+    var changes = (data.changes || []).filter(function (c) { return c.outcome !== "unchanged"; });
+    if (!changes.length) {
+      nodes.push(empty(data.baseline
+        ? "This assessment found nothing to report."
+        : "Nothing moved. Every finding is exactly as it was."));
+      return nodes;
+    }
+
+    nodes.push(el("div", { className: "table-wrap" }, [
+      el("table", {}, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: data.baseline ? "State" : "Change" }), el("th", { text: "Severity" }),
+          el("th", { text: "Affected" }), el("th", { text: "Finding" }),
+          el("th", { text: "What to do" })
+        ])]),
+        el("tbody", {}, changes.map(function (change) {
+          // On a baseline every finding is technically "new", and labelling the
+          // rows that way contradicts the banner directly above them — the same
+          // confusion diff.py avoids in the data, reintroduced in the display.
+          var label = data.baseline ? "found" : change.outcome;
+          return el("tr", {}, [
+            el("td", {}, [el("span", { className: "tag " + outcomeClass(change.outcome),
+                                       text: label })]),
+            el("td", {}, [
+              sevPill(change.severity),
+              // Both severities, when one became the other: "medium to critical"
+              // is the fact, and either alone is half of it.
+              change.previous_severity && change.previous_severity !== change.severity
+                ? el("span", { className: "small", text: " was " + change.previous_severity })
+                : null
+            ]),
+            el("td", { className: "mono small", text: change.asset || "—" }),
+            el("td", {}, [
+              el("div", { text: change.title || "" }),
+              change.confidence && change.confidence !== "confirmed"
+                ? el("span", { className: "tag", text: change.confidence })
+                : null
+            ]),
+            el("td", { className: "small", text: change.remediation || "—" })
+          ]);
+        }))
+      ])
+    ]));
+    return nodes;
+  }
+
+  function outcomeClass(outcome) {
+    return outcome === "worsened" || outcome === "new" ? "stale" : "live";
+  }
+
+  function mintLink(scanId) {
+    if (!window.confirm(
+      "Create a shareable link to this assessment?\n\n" +
+      "Anyone holding the link can read this scan, without signing in, until it " +
+      "expires. It grants this one scan and nothing else."
+    )) { return; }
+
+    api(tenantPath("/scans/" + encodeURIComponent(scanId) + "/link"), { method: "POST" })
+      .then(function (result) {
+        // Shown, not copied silently: the operator should see what they are
+        // about to hand somebody before they hand it over.
+        showGlobal("ok", "Shareable link created: " +
+          window.location.origin + result.path);
+      }, function (err) {
+        showGlobal("bad", "Could not create a link: " + err.message);
+      });
+  }
+
   var RENDERERS = {
     overview: renderOverview,
     policy: renderPolicy,
@@ -1003,6 +1161,7 @@
     analytics: renderAnalytics,
     alerts: renderAlerts,
     exceptions: renderExceptions,
+    scans: renderScans,
     evidence: renderEvidence,
     scan: renderScan
   };

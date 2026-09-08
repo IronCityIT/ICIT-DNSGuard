@@ -42,6 +42,7 @@
     <button class="tab" role="tab" data-tab="analytics"  aria-selected="false">Analytics</button>
     <button class="tab" role="tab" data-tab="alerts"     aria-selected="false">Alerts</button>
     <button class="tab" role="tab" data-tab="exceptions" aria-selected="false">Exceptions</button>
+    <button class="tab" role="tab" data-tab="scans"      aria-selected="false">Scans</button>
     <button class="tab" role="tab" data-tab="evidence"   aria-selected="false">Evidence</button>
     <button class="tab" role="tab" data-tab="scan"       aria-selected="false">Assessment</button>
   </div>
@@ -123,6 +124,16 @@
   </section>
 
   <!-- Evidence ------------------------------------------------------- -->
+  <!-- Scans ---------------------------------------------------------- -->
+  <section id="panel-scans" data-panel="scans" hidden>
+    <div class="panel-head">
+      <h2>Scans</h2>
+      <p>What each assessment found, and what moved since the one before it. A first
+         scan of a target is a baseline, not a list of new problems.</p>
+    </div>
+    <div id="scans-body"></div>
+  </section>
+
   <section id="panel-evidence" data-panel="evidence" hidden>
     <div class="panel-head">
       <h2>Audit &amp; evidence</h2>

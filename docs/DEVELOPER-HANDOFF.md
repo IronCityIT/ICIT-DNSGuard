@@ -65,7 +65,7 @@ currently serving real users. **VERIFIED**.
 | Exposure ratchets | `tools/check-exposure.py`, `tools/check-dns-exposure.py` | **VERIFIED** — both run in CI on every PR |
 | Quality gates | `tools/gates.sh` (12 gates), `.github/workflows/ci.yml`, `Jenkinsfile` | **VERIFIED** green |
 | Free-scan funnel | `cloud-function/`, `dashboard/public/index.html`, `.github/workflows/dns-analysis.yml` | **VERIFIED** live in production |
-| Operator console | `dashboard/public/console.{html,css,js}` | **VERIFIED** as files; **UNKNOWN** whether ever deployed — it has no live API to talk to |
+| Operator console | `dashboard/public/console.{html,css,js}` | **VERIFIED** as files, including a Scans panel over the change-detection API; **UNKNOWN** whether ever deployed — it has no live API to talk to |
 
 **Test suite: 532 passing, 89% line coverage** over `dnsguard/` + `module_framework/`.
 **VERIFIED** — `sh tools/gates.sh all`, 2026-09-07. No test performs network I/O;
@@ -690,8 +690,9 @@ Ordered by value, nonblocked first.
 6. **Surface change detection to a client.** `dnsguard/diff.py` computes it and
    `GET /scans/{id}/changes` serves it, but no page renders it yet — and "is it
    getting better or worse" is the question the client is actually paying for.
-7. **Surface change detection to a client.** `GET /scans/{id}/changes` serves it
-   and nothing renders it.
+7. **Point a real server at the console.** It now has a Scans panel showing what
+   moved between assessments and minting shareable links, but the console has
+   never been deployed and has no live control plane to talk to.
 
    *(The three low-coverage modules are done. All three — `transport_security_audit`,
    `network_path`, `resolver_performance` — turned out to have a real defect
@@ -738,6 +739,8 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| Removing the hosting workflow stopped the red check on `main` | Merge commit `b61d218` triggered **only** CI — no `Deploy to Firebase Hosting` run, after 55 consecutive failures | 2026-09-08 |
+| The console's change report reads coherently on a baseline and on a regression | Rendered through a DOM shim: baseline shows "found"/"N finding(s) recorded", a regression shows "worsened … was medium" | 2026-09-08 |
 | The free-scan trigger limits per submitter *and* per source, survives a restart, and stores neither the address nor the source it counts | `pytest tests/test_trigger.py tests/test_api.py` — 41 + 74 passed | 2026-09-07 |
 | A signed link expires, cannot be repointed, and leaks nothing on refusal | `pytest tests/test_links.py tests/test_api.py` — 31 + 66 passed, including re-signing with the real secret as a control so the tamper tests cannot pass for the wrong reason | 2026-09-07 |
 | `resolver_performance` reports unmeasured rather than "domain is down" when the scanner cannot reach the resolvers | `pytest tests/test_resolver_performance.py` — 16 passed, benchmark and control both injected | 2026-09-07 |
