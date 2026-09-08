@@ -577,6 +577,7 @@ secrets. None are guessed here.
 | — | Critical | `vpn.ironcityit.com` → `icit.mynetgear.com` (NXDOMAIN) on a self-service dynamic-DNS zone: claimable subdomain takeover on a trusted hostname | Open, monitored by `check-dns-exposure.py`. **One DNS change: delete or re-claim.** Needs DNS access this environment does not have. |
 | — | High | `iron-city-it-threatinspector` carries original test-mode rules; `ironcity-attacksimpro` permits enumeration | Flagged, **not this repo's to change** |
 | — | Med | Nothing can be deployed: no `gcloud`/`firebase`/ADC, `FIREBASE_SERVICE_ACCOUNT` absent | Open, environmental |
+| **D28** | High | `resolver_performance` reported **"to most of the internet this domain is down"** at `high` severity whenever every lookup failed — which is what happens when *the scanner* cannot reach public resolvers, ordinary in containers and CI. A healthy domain was one egress rule from being called down | **Fixed** — each resolver is asked for a name that certainly exists before its silence is treated as evidence about the domain |
 | **D27** | Med | `network_path` treated "any hop answered" as having reached the server — usually true, because the first hop is the scanner's own gateway — and reported a host that ignores traceroute probes at **medium**, telling clients a correctly hardened server was broken | **Fixed** — reaching means the last responding hop is the destination; a silent host is `info`/`inconclusive` about our vantage point |
 | **D26** | Med | `transport_security_audit` reported mail transport as **enforced** on the strength of the `_mta-sts` TXT record alone — so `mode: testing`, `mode: none` and a record with no policy file behind it all read as protected | **Fixed** — the policy is fetched and its mode is what decides |
 | — | Med | Certificate transparency does not answer from GitHub runners, so the DNS ratchet sweeps 56 conventional names only | Reported by the gate; fatal only with `--require-certificate-transparency` |
@@ -675,10 +676,14 @@ Ordered by value, nonblocked first.
 6. **Surface change detection to a client.** `dnsguard/diff.py` computes it and
    `GET /scans/{id}/changes` serves it, but no page renders it yet — and "is it
    getting better or worse" is the question the client is actually paying for.
-7. **`resolver_performance` is still at 33%.** It reaches the network, which is
-   why it is thin. Two modules have now been through this and **both had a real
-   defect behind the low number** — chasing the coverage figure is the wrong
-   framing; the question is what the figure is hiding.
+7. **Surface change detection to a client.** `GET /scans/{id}/changes` serves it
+   and nothing renders it.
+
+   *(The three low-coverage modules are done. All three — `transport_security_audit`,
+   `network_path`, `resolver_performance` — turned out to have a real defect
+   behind the number, in each case reporting our own limitation as the client's
+   problem. Chasing coverage was the wrong framing; asking what the number was
+   hiding was the right one.)*
 
    **Correction:** `module_framework/cli.py` was previously listed here at 0%.
    That number is a measurement artifact — it *is* tested, by subprocess in
@@ -718,6 +723,7 @@ Everything asserted as VERIFIED above traces to one of these.
 | Docker image builds on every CI run | `gh run view --log`, Build step showing `naming to docker.io/library/icit-dnsguard:gate done` | 2026-09-07 |
 | Asset inventory merges across modules | Live scan of `ironcityit.com` with `subdomain_discovery,alias_takeover`: 20 assets, 7 carrying both modules' attributes and crediting both sources | 2026-09-07 |
 | `module_framework/cli.py` is tested and not dead | `tests/test_catalog.py` runs it by subprocess; it is the multi-target entry point | 2026-09-07 |
+| `resolver_performance` reports unmeasured rather than "domain is down" when the scanner cannot reach the resolvers | `pytest tests/test_resolver_performance.py` — 16 passed, benchmark and control both injected | 2026-09-07 |
 | `network_path` emits nothing above `info`, and reports a complete result on every early return | `pytest tests/test_network_path.py` — 17 passed, including the traceroute-timeout path that would previously have raised `KeyError` | 2026-09-07 |
 | MTA-STS mode is read from the policy, not the record | Live: `google.com` → `mode=enforce max_age=86400` reported enforced; `ironcityit.com` → no record, reported not enforced | 2026-09-07 |
 | Change detection against **real** data | Two genuine `ironcityit.com` reports (one taken on a resolver that could not confirm, one on a conformant resolver) ingested and compared: `regressed: True`, the critical takeover reported `new`, the inconclusive placeholder `resolved`, audit chain valid | 2026-09-07 |
