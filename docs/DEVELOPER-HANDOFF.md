@@ -482,8 +482,11 @@ API token, `DNSGUARD_LINK_SECRET`. Names to be agreed with whoever provisions th
 - **Nothing in this repository can be deployed from the current environment.**
   No `gcloud`, no `firebase` CLI, no application-default credentials, and
   `FIREBASE_SERVICE_ACCOUNT` is not on the repository. Re-checked 2026-09-06.
-- `firebase-deploy.yml` has failed on **every** push to `main` with
-  `Input required and not supplied: firebaseServiceAccount`.
+- The hosting-deploy workflow was **removed**. It failed on **every** push to
+  `main` with `Input required and not supplied: firebaseServiceAccount` — 55 runs,
+  55 failures, verified with `gh run list --workflow firebase-deploy.yml`. There
+  is now **no automated hosting deploy at all**, which is a truer statement of the
+  position than a workflow that pretended to be one.
 - Consequence: every dashboard change since the stored-XSS fix is committed to
   `main` and **unpublished**. The live site serves the last hand-deployed build.
 - `Jenkinsfile` deploys nothing by design; it runs the same `tools/gates.sh`.
@@ -515,7 +518,7 @@ Every Firebase/Firestore/GCP reference in the repository, classified.
 | Path | What it is | Disposition |
 |---|---|---|
 | `deploy.sh` | Manual Cloud Shell script: deploys 3 Cloud Functions + Firebase Hosting. Also held D24. | **REMOVE** — done in this change |
-| `.github/workflows/firebase-deploy.yml` | Hosting deploy; has never succeeded | **REMOVE** in Phase 4 |
+| ~~`.github/workflows/firebase-deploy.yml`~~ | Hosting deploy | **REMOVED** — 55 runs, 55 failures, Jan–Sep 2026, zero successes. It deployed nothing while turning every push to `main` red, and it targeted a retired platform |
 | `firebase.json` | Hosting config, CSP + security headers, rewrites | **MIGRATE, done for the part that matters** — the header/CSP policy now lives in `deploy/web-headers.json`, with `tools/render-headers.py` emitting Caddy and nginx snippets and a test asserting the two files still agree. The rewrites remain Firebase-specific and go in phase 4. |
 | `firestore.rules` | Firestore security rules | **REMOVE** in Phase 4; replaced by API-side authorisation |
 | `cloud-function/index.js` + `package.json` | `triggerDNSScan`, `storeScanResults`, `getScanStatus` | **MIGRATE — all three reimplemented, none cut over.** `storeScanResults`/`getScanStatus` → `dnsguard/scans.py`; the public read → `dnsguard/links.py`; `triggerDNSScan` → `dnsguard/trigger.py`. **Still only in the Cloud Function: the HubSpot integration**, which is a marketing concern rather than a product one and needs a decision about where it belongs. |
@@ -565,8 +568,10 @@ anything is switched, and nothing is deleted until the replacement is proven.**
   new one only. Dashboard reads through the API. Existing 34 scan documents are
   **exported and imported, then reconciled by count and checksum** before the
   Firestore path is switched off.
-- **Phase 4 — retire.** Delete `firebase-deploy.yml`, `firestore.rules`,
-  `cloud-function/`, `firebase.json`. Decommission the GCP projects. Retire the
+- **Phase 4 — retire.** `firebase-deploy.yml` is **done** (it was removed early:
+  it had never functioned, so removing it lost no capability and stopped a
+  permanently red check training people to ignore red checks). Still to delete:
+  `firestore.rules`, `cloud-function/`, `firebase.json`. Decommission the GCP projects. Retire the
   exposure ratchet last, once there is nothing left to measure.
 
 **Blocking unknowns for Phases 2–4:** NAS/MariaDB connection details, runner
