@@ -320,12 +320,28 @@ def _email_phrase(grade: str) -> str:
 
 
 def _quick_wins(findings: builtins.list[Any], limit: int = 3) -> builtins.list[str]:
-    """The highest-severity findings that come with a concrete remediation."""
+    """The highest-severity findings that come with a concrete remediation.
+
+    This is the action list a client works from, so leaving something out of it
+    is worse than the ordering being slightly off.
+
+    It used to read only `evidence["remediation"]` — the legacy location — and
+    never `Finding.remediation`, which is the field base.py documents as the
+    contract. The effect was that **a module written against the documented API
+    was silently excluded**: a real report carried a critical subdomain takeover
+    with a perfectly good remediation, and the quick-win list offered only the
+    low-severity DNSSEC item, because that module happened to use the older way.
+
+    The field first, the legacy key as a fallback — the same order
+    `_client_finding` was corrected to use, for the same reason.
+    """
     order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     ranked = sorted(findings, key=lambda f: order.get(f.severity, 9))
-    wins = []
+    wins: builtins.list[str] = []
     for finding in ranked:
-        remediation = (finding.evidence or {}).get("remediation")
+        remediation = getattr(finding, "remediation", "") or (finding.evidence or {}).get(
+            "remediation", ""
+        )
         if remediation and remediation not in wins:
             wins.append(remediation)
         if len(wins) == limit:

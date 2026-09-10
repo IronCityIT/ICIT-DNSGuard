@@ -481,3 +481,66 @@ def test_an_unassessed_email_posture_is_still_stated():
     summary = score([finding("alias_takeover", "critical")], "example.com").executive_summary
     assert "1 critical issue(s)" in summary
     assert "Email authentication was not assessed" in summary
+
+
+# ── the action list must not exclude the modules that follow the contract ────
+
+
+def test_a_remediation_on_the_documented_field_reaches_the_quick_wins():
+    """`_quick_wins` read only `evidence["remediation"]`, so a module written
+    against `Finding.remediation` — the field base.py documents — was silently
+    left out. A real report carried a critical subdomain takeover with a good
+    remediation and offered the client only the low-severity DNSSEC item."""
+    findings = [
+        Finding(
+            module="alias_takeover",
+            target="acme.example",
+            severity="critical",
+            title="Claimable alias",
+            remediation="Delete the alias record.",
+        ),
+        Finding(
+            module="dnssec_audit",
+            target="acme.example",
+            severity="low",
+            title="Not signed",
+            evidence={"remediation": "Enable DNSSEC."},
+        ),
+    ]
+    wins = score(findings, "acme.example").quick_wins
+    assert wins[0] == "Delete the alias record.", "the worst finding leads the action list"
+    assert "Enable DNSSEC." in wins
+
+
+def test_the_legacy_evidence_key_still_works():
+    """Older modules have not all been migrated, and dropping them would trade
+    one silent omission for another."""
+    findings = [
+        Finding(
+            module="spf_audit",
+            target="acme.example",
+            severity="high",
+            title="Missing SPF",
+            evidence={"remediation": "Publish SPF."},
+        )
+    ]
+    assert score(findings, "acme.example").quick_wins == ["Publish SPF."]
+
+
+def test_the_field_wins_when_both_are_present():
+    findings = [
+        Finding(
+            module="m",
+            target="acme.example",
+            severity="high",
+            title="t",
+            remediation="the field",
+            evidence={"remediation": "the legacy key"},
+        )
+    ]
+    assert score(findings, "acme.example").quick_wins == ["the field"]
+
+
+def test_findings_with_no_remediation_are_simply_absent():
+    findings = [finding("dns_records", "info")]
+    assert score(findings, "acme.example").quick_wins == []
