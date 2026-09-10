@@ -597,7 +597,12 @@
                 }
                 row.appendChild(titleCell);
 
-                row.appendChild(cell(f.remediation || 'Review configuration'));
+                // "Review configuration" is a reasonable nudge for a problem
+                // with no stated fix. Printing it beside "Mail signing keys are
+                // published" invents busywork out of good news, so an
+                // informational row with nothing to do says so.
+                row.appendChild(cell(
+                    f.remediation || (severity === 'info' ? '\u2014' : 'Review configuration')));
                 tbody.appendChild(row);
             });
             

@@ -418,3 +418,10 @@ def test_whoever_configures_the_api_is_warned_about_the_csp(index):
     to a console nobody is watching — the page simply stops working."""
     assert "connect-src" in index
     assert "deploy/web-headers.json" in index
+
+
+def test_an_informational_row_is_not_told_to_review_its_configuration(index):
+    """ "Review configuration" is a reasonable nudge for a problem with no stated
+    fix. Printing it beside "Mail signing keys are published" invents busywork
+    out of good news — a real report had five such rows."""
+    assert "severity === 'info' ? '\\u2014' : 'Review configuration'" in index
