@@ -218,20 +218,25 @@ jobs:
           echo "report_file=$REPORT" >> "$GITHUB_OUTPUT"
           echo "Report validated: $REPORT"
 
-      - name: Extract findings
+      # Not every finding. The engine rates whatever it is handed as a risk to
+      # remediate, and handed good news ("DMARC is enforcing") it advises
+      # undoing it. The selection rule is dnsguard.consensus.for_engine, and the
+      # store step pairs the answers against the same rule.
+      - name: Extract findings for the AI engine
         id: extract
         env:
           REPORT: ${{ steps.scan.outputs.report_file }}
         run: |
           set -euo pipefail
-          FINDINGS=$(jq -c '.findings // []' "$REPORT")
-          echo "findings_b64=$(printf '%s' "$FINDINGS" | base64 -w0)" >> "$GITHUB_OUTPUT"
-          if [ "$FINDINGS" = "[]" ]; then
+          python3 tools/engine-input.py --report "$REPORT" -o engine-findings.json
+          [ "$(head -c 1 engine-findings.json)" = "[" ] || {
+            echo "::error::engine-findings.json does not start with ["; exit 1; }
+          echo "findings_b64=$(base64 -w0 < engine-findings.json)" >> "$GITHUB_OUTPUT"
+          if [ "$(jq 'length' engine-findings.json)" = "0" ]; then
             echo "has_findings=false" >> "$GITHUB_OUTPUT"
-            echo "No findings produced"
+            echo "Nothing for the engine to analyse"
           else
             echo "has_findings=true" >> "$GITHUB_OUTPUT"
-            echo "Findings: $(printf '%s' "$FINDINGS" | jq 'length')"
           fi
 
       - name: Upload report
