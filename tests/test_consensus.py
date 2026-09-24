@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from dnsguard.consensus import attach, decode, pair, strip_vendors, summarise
+from dnsguard.consensus import attach, decode, for_engine, pair, strip_vendors, summarise
 
 #: Our tooling. These must never appear in a stored report.
 TOOL_VENDORS = ("Groq", "OpenRouter", "Gemini", "model_name", "model_responses")
@@ -401,3 +401,195 @@ def test_a_finding_without_a_fingerprint_still_gets_its_title():
     paired = pair([{"title": "Old finding", "severity": "high"}], [entry()])
     assert paired[0]["finding_title"] == "Old finding"
     assert paired[0]["finding_fingerprint"] == ""
+
+
+# ── what the engine is asked about ───────────────────────────────────────────
+#
+# Every finding used to go. On the 2026-09-14 production run, six of the eight
+# were good news — DMARC at p=reject, DKIM keys published, SPF ending in -all,
+# two inventory summaries — and the engine, which rates whatever it is handed as
+# a risk to remediate, advised the client to "consider reducing the enforcement
+# level" of DMARC, to make DKIM public keys "not publicly accessible", and to
+# "implement SPF". The takeover masked it on our domain; on a clean domain that
+# is the headline of the AI panel.
+
+
+def good_news(title="Mail authentication policy is enforcing"):
+    return {"title": title, "severity": "info", "remediation": "", "confidence": "confirmed"}
+
+
+def test_informational_findings_with_nothing_to_do_are_not_sent():
+    assert for_engine([good_news()]) == []
+
+
+def test_anything_above_informational_is_sent():
+    finding = a_finding("Domain answers are not signed", "low")
+    assert for_engine([finding]) == [finding]
+
+
+def test_an_informational_finding_with_a_remediation_is_still_a_gap():
+    """TLS-RPT absent is informational and still something to do."""
+    gap = {
+        "title": "Mail transport failures are not reported",
+        "severity": "info",
+        "remediation": "Publish a _smtp._tls TXT record.",
+        "confidence": "confirmed",
+    }
+    assert for_engine([gap]) == [gap]
+
+
+def test_a_whitespace_remediation_is_no_remediation():
+    assert for_engine([{"severity": "info", "remediation": "   "}]) == []
+
+
+def test_inconclusive_findings_are_not_sent_at_any_severity():
+    """Their remediation is addressed to us, and an analysis of one rates a
+    risk the scanner has no evidence of."""
+    ours = {
+        "title": "Path measurement unavailable",
+        "severity": "medium",
+        "remediation": "Install traceroute on the scan runner.",
+        "confidence": "inconclusive",
+    }
+    assert for_engine([ours]) == []
+
+
+def test_the_real_report_sends_two_of_eight():
+    """The shape of the 2026-09-14 production report."""
+    report = [
+        a_finding("An alias points at a name somebody else can claim", "critical", "fp-t"),
+        good_news("Alias destinations checked"),
+        good_news("Mail signing keys are published"),
+        good_news("Mail authentication policy is enforcing"),
+        good_news("Zone inventory collected"),
+        {
+            **a_finding("Domain answers are not signed", "low", "fp-d"),
+            "remediation": "Enable DNSSEC at your DNS provider.",
+        },
+        good_news("Sender authorisation policy is enforcing"),
+        good_news("Public host inventory collected"),
+    ]
+    assert [f["fingerprint"] for f in for_engine(report)] == ["fp-t", "fp-d"]
+
+
+def test_report_order_is_preserved():
+    """The pairing is positional, so the order sent is the order matched."""
+    first, second = a_finding("A", "high", "fp-1"), a_finding("B", "low", "fp-2")
+    assert for_engine([first, good_news(), second]) == [first, second]
+
+
+def test_severity_and_confidence_are_read_case_insensitively():
+    assert for_engine([{"severity": "INFO", "remediation": ""}]) == []
+    assert for_engine([{"severity": "high", "confidence": "Inconclusive"}]) == []
+
+
+def test_attach_pairs_against_what_the_engine_was_sent():
+    """Two analyses for a report of eight findings is a correct count once the
+    six good-news rows are withheld — and each lands on the finding it is about."""
+    report = {
+        "findings": [
+            good_news("Zone inventory collected"),
+            a_finding("Takeover", "critical", "fp-t"),
+            good_news("Sender authorisation policy is enforcing"),
+            {**a_finding("DNSSEC", "low", "fp-d"), "remediation": "Enable DNSSEC."},
+        ]
+    }
+    enriched = attach(report, [entry("CRITICAL"), entry("MEDIUM")])
+    paired = enriched["ai_consensus_findings"]
+    assert [p["finding_fingerprint"] for p in paired] == ["fp-t", "fp-d"]
+    assert all("unpaired_reason" not in p for p in paired)
+
+
+def test_attach_does_not_pair_against_the_whole_report():
+    """The old behaviour — eight analyses for eight findings — is now a count
+    mismatch, and says so rather than mislabelling."""
+    report = {"findings": [good_news(), a_finding("Takeover", "critical", "fp-t")]}
+    enriched = attach(report, [entry("INFO"), entry("CRITICAL")])
+    assert all("unpaired_reason" in p for p in enriched["ai_consensus_findings"])
+
+
+# ── the tool the workflow runs ───────────────────────────────────────────────
+
+ENGINE_INPUT = ROOT / "tools" / "engine-input.py"
+
+
+def run_engine_input(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(ENGINE_INPUT), *args], capture_output=True, text=True, cwd=str(ROOT)
+    )
+
+
+def test_the_tool_writes_the_selected_findings_as_a_json_list(tmp_path):
+    report = write(
+        tmp_path / "r.json", {"findings": [good_news(), a_finding("Takeover", "critical", "fp-t")]}
+    )
+    out = tmp_path / "engine.json"
+    result = run_engine_input("--report", str(report), "-o", str(out))
+    assert result.returncode == 0, result.stderr
+    text = out.read_text(encoding="utf-8")
+    assert text.startswith("[") and text.endswith("]\n")
+    assert [f["fingerprint"] for f in json.loads(text)] == ["fp-t"]
+
+
+def test_the_tool_says_what_it_withheld_and_why(tmp_path):
+    report = write(
+        tmp_path / "r.json",
+        {
+            "findings": [
+                good_news("Zone inventory collected"),
+                {
+                    "title": "Path measurement unavailable",
+                    "severity": "info",
+                    "remediation": "Install traceroute.",
+                    "confidence": "inconclusive",
+                },
+                a_finding("Takeover", "critical"),
+            ]
+        },
+    )
+    result = run_engine_input("--report", str(report), "-o", str(tmp_path / "e.json"))
+    assert "1 of 3 finding(s) sent to the engine" in result.stdout
+    assert "Zone inventory collected  (informational, nothing to do)" in result.stdout
+    assert "Path measurement unavailable  (inconclusive)" in result.stdout
+
+
+def test_a_clean_domain_gives_the_engine_nothing(tmp_path):
+    """Written as an empty list, which the workflow reads as has_findings=false
+    and skips the engine altogether."""
+    report = write(tmp_path / "r.json", {"findings": [good_news(), good_news("SPF ok")]})
+    out = tmp_path / "engine.json"
+    assert run_engine_input("--report", str(report), "-o", str(out)).returncode == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == []
+
+
+def test_a_report_without_findings_is_an_empty_list_not_an_error(tmp_path):
+    report = write(tmp_path / "r.json", {"domain": "acme.example"})
+    out = tmp_path / "engine.json"
+    assert run_engine_input("--report", str(report), "-o", str(out)).returncode == 0
+    assert json.loads(out.read_text(encoding="utf-8")) == []
+
+
+def test_a_missing_report_is_a_usage_error_for_the_tool(tmp_path):
+    result = run_engine_input("--report", str(tmp_path / "nope.json"), "-o", str(tmp_path / "e"))
+    assert result.returncode == 2
+    assert "no such report" in result.stderr
+
+
+def test_the_tool_and_the_store_step_agree(tmp_path):
+    """The whole point: what the tool sends is what `attach` pairs against, so
+    the engine's answers land on the right findings end to end."""
+    findings = [
+        good_news("Zone inventory collected"),
+        a_finding("Takeover", "critical", "fp-t"),
+        good_news("Sender authorisation policy is enforcing"),
+        {**a_finding("DNSSEC", "low", "fp-d"), "remediation": "Enable DNSSEC."},
+    ]
+    report = write(tmp_path / "r.json", {"findings": findings})
+    out = tmp_path / "engine.json"
+    run_engine_input("--report", str(report), "-o", str(out))
+    sent = json.loads(out.read_text(encoding="utf-8"))
+    # The engine answers one analysis per finding it was sent, in order.
+    answers = [entry("CRITICAL"), entry("MEDIUM")]
+    assert len(answers) == len(sent)
+    paired = attach({"findings": findings}, answers)["ai_consensus_findings"]
+    assert [p["finding_fingerprint"] for p in paired] == [f["fingerprint"] for f in sent]

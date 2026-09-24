@@ -35,6 +35,25 @@ be more than one point of display and only one of these.
 
 The counts survive — "13 of 15 models agreed" is the useful part and names
 nobody.
+
+## What the engine is asked about
+
+Not every finding. The engine rates whatever it is handed as a risk to be
+remediated, and a real run showed what that does to good news: handed "Mail
+authentication policy is enforcing" (DMARC at `p=reject`) it advised the client
+to *"consider reducing the enforcement level"*; handed "Mail signing keys are
+published" it advised making DKIM public keys *"not publicly accessible"*; handed
+"Sender authorisation policy is enforcing" it recommended *"implementing SPF"*.
+Six of the eight findings sent were of that kind.
+
+On a domain with a real problem the worst finding's analysis is the headline and
+the client never sees those. On a domain with nothing wrong, the headline **is**
+one of them — advice to undo a correct configuration, on the panel labelled AI.
+
+So the report decides which findings are the engine's business (`for_engine`),
+the extract step in the workflow sends exactly those, and `pair` lines the
+answers up against the same subset. One rule, read from one place, or the
+positional pairing silently drifts.
 """
 
 from __future__ import annotations
@@ -140,6 +159,32 @@ def _dedupe(steps: builtins.list[Any]) -> builtins.list[str]:
     return out
 
 
+def for_engine(findings: builtins.list[dict[str, Any]]) -> builtins.list[dict[str, Any]]:
+    """The findings the AI engine is asked about, in report order.
+
+    A finding is sent when it states a problem the client can act on: anything
+    above informational severity, or an informational finding that carries a
+    remediation (a missing TLS-RPT record is informational and still something to
+    do). An informational finding with nothing to do is good news or inventory,
+    and asking a risk engine to rate good news produces advice to undo it.
+
+    Inconclusive findings are not sent at any severity. They describe what the
+    scanner could not check, their remediation is addressed to us ("install
+    traceroute on the scan runner"), and an analysis of them rates a risk the
+    scanner has no evidence of.
+    """
+    selected = []
+    for finding in findings:
+        if str(finding.get("confidence", "")).strip().lower() == "inconclusive":
+            continue
+        actionable = bool(str(finding.get("remediation", "") or "").strip())
+        informational = str(finding.get("severity", "")).strip().lower() == "info"
+        if informational and not actionable:
+            continue
+        selected.append(finding)
+    return selected
+
+
 def pair(
     findings: builtins.list[dict[str, Any]], entries: builtins.list[dict[str, Any]]
 ) -> builtins.list[dict[str, Any]]:
@@ -195,5 +240,8 @@ def attach(report: dict[str, Any], entries: builtins.list[dict[str, Any]]) -> di
     # The per-finding detail, vendor names removed and each analysis labelled
     # with the finding it is about, for anything that wants more than the
     # headline.
-    enriched["ai_consensus_findings"] = pair(report.get("findings") or [], entries)
+    # Paired against the findings the engine was actually sent, not the whole
+    # report: `for_engine` is the same rule the extract step used to select
+    # them, so position N here is position N there.
+    enriched["ai_consensus_findings"] = pair(for_engine(report.get("findings") or []), entries)
     return enriched
