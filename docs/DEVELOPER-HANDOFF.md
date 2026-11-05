@@ -337,6 +337,11 @@ reading a comparison that spans a deploy.
 | `DNSGUARD_API_ACTOR` | `dnsguard/identity.py` | Who the audit chain records for that credential. |
 | `DNSGUARD_LINK_SECRET` | `dnsguard/api.py` → `dnsguard/links.py` | HMAC key for signed scan links. Absent → minting and public reads both answer 503; nothing is signed or accepted. |
 | `DNSGUARD_DATA_DIR` | `dnsguard/api.py`, Dockerfile | Root for `JsonFileStore`. Unset → in-memory store. |
+| `DNSGUARD_DB_HOST` | `dnsguard/api.py` | Set → store is MariaDB (`SqlDocumentStore`, PyMySQL). **Wins over `DNSGUARD_DATA_DIR`.** Unset → file/in-memory as before. |
+| `DNSGUARD_DB_PORT` | `dnsguard/api.py` | MariaDB port. Defaults to `3306`. |
+| `DNSGUARD_DB_NAME` | `dnsguard/api.py` | Database name. Defaults to `dnsguard`. |
+| `DNSGUARD_DB_USER` | `dnsguard/api.py` | Least-privilege user, scoped to that one database. |
+| `DNSGUARD_DB_PASSWORD` | `dnsguard/api.py` | Password for that user. A discrete variable, never a DSN, so metacharacters need no escaping. |
 | `DNSGUARD_FETCH_FEEDS` | `dnsguard/api.py` | `1/true/yes` wires the HTTP feed fetcher. Off → maintenance reports feeds as "not attempted" rather than healthy. |
 
 CLI flags of note: `tools/scan.py --nameservers` (resolvers that report NXDOMAIN
@@ -575,14 +580,15 @@ anything is switched, and nothing is deleted until the replacement is proven.**
   broaden the secrets gate. *(This change.)*
 - **Phase 1 — MariaDB-backed `DocumentStore`.** Additive: a new implementation
   behind the existing abstraction. Nothing switches to it. Contract tests run
-  against all implementations. **DONE, with one caveat** — `dnsguard/sqlstore.py`.
-  The full `DocumentStore` contract is **VERIFIED** against a real engine
-  (SQLite) through this class. Execution against a live **MariaDB is NOT
-  VERIFIED**: no server, no client library and no container runtime exists in
-  the environment it was written in, so the MariaDB dialect's DDL and upsert are
-  asserted as statements and have never been run. **The first connection to a
-  real MariaDB is the test that has not happened yet.** The dialect is four
-  strings, separated deliberately so that test is cheap.
+  against all implementations. **DONE and verified end-to-end** — `dnsguard/sqlstore.py`.
+  The full `DocumentStore` contract is **VERIFIED** against two real engines
+  through this class: SQLite (in the suite) and, as of 2026-11-04, a live
+  **MariaDB 10.5** on qnap-nas-01. The first real connection — the test the
+  earlier draft said had not happened yet — ran against the `dnsguard` database:
+  schema DDL, the `ON DUPLICATE KEY` upsert, ordered list, tenant isolation, a
+  utf8mb4 non-BMP round-trip and a rowcount delete all pass. The driver is
+  PyMySQL (§16.2), and `_default_store` selects MariaDB when `DNSGUARD_DB_HOST`
+  is set; it wins over `DNSGUARD_DATA_DIR`.
 - **Phase 2 — self-hosted ingest + read API**, replacing `storeScanResults` and
   `getScanStatus`. **BUILT, not cut over** — `dnsguard/scans.py` plus routes on
   the control-plane API. Authenticated, tenant-partitioned from the first row,
@@ -721,12 +727,16 @@ has checked is a hypothesis.
 
 Ordered by value, nonblocked first.
 
-1. **Run `dnsguard/sqlstore.py` against a real MariaDB.** Everything else in
-   Phase 2 rests on it, and it is currently the only unexecuted code path in the
-   storage layer. Needs a server; nothing else.
-2. **Decide the connection driver and add it to `requirements.txt`.** The store
-   takes any DB-API 2.0 factory, so this is a deployment choice rather than a
-   code one, and it is deliberately not made here.
+1. **Run `dnsguard/sqlstore.py` against a real MariaDB.** **DONE (2026-11-04).**
+   Verified against MariaDB 10.5 on qnap-nas-01 (`dnsguard` database, least-priv
+   `dnsguard_app` user): schema DDL, upsert, ordered list, tenant isolation,
+   utf8mb4 non-BMP round-trip and rowcount delete all pass. No longer the only
+   unexecuted code path in the storage layer.
+2. **Decide the connection driver and add it to `requirements.txt`.** **DONE.**
+   PyMySQL — pure Python, so no build toolchain is needed in the slim image. It
+   is imported lazily in `_default_store`, so the file and in-memory stores carry
+   no database dependency. The store still takes any DB-API 2.0 factory; this is
+   the deployment's choice, now made.
 3. **Per-user identity (the rest of D23).** The credential registry fixed the
    boundary; it did not make attribution per-person. Auth0 organisation → signed
    token carrying `client_id` and roles.
