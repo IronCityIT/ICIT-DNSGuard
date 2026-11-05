@@ -57,6 +57,7 @@ from .maintenance import MaintenanceRunner
 from .policy import PolicyService, Rule
 from .resilience import BreakerRegistry, try_call
 from .scans import ScanService
+from .sqlstore import MARIADB, SqlDocumentStore
 from .store import DocumentStore, JsonFileStore, MemoryStore
 from .tenancy import Site, Tenant, TenantDirectory
 from .trigger import ScanTrigger
@@ -274,8 +275,46 @@ class Services:
 
 
 def _default_store() -> DocumentStore:
+    # DNSGUARD_DB_HOST wins over DNSGUARD_DATA_DIR: an explicit database is the
+    # strongest signal, and the file store is for local development. Unset both
+    # and the process stays in memory, which is what the test suite relies on.
+    if os.environ.get("DNSGUARD_DB_HOST"):
+        return _mariadb_store()
     root = os.environ.get("DNSGUARD_DATA_DIR")
     return JsonFileStore(root) if root else MemoryStore()
+
+
+def _mariadb_store() -> DocumentStore:
+    """Build the MariaDB-backed store from DNSGUARD_DB_* environment variables.
+
+    `SqlDocumentStore` takes any DB-API 2.0 connection factory, so the driver is
+    a deployment choice (handoff §16.2). PyMySQL is chosen because it is pure
+    Python — no build toolchain in the slim container image — and it is imported
+    lazily so the file and in-memory stores carry no database dependency.
+
+    The password travels as a discrete variable, never a DSN, so a value with URL
+    metacharacters needs no escaping. utf8mb4 on the connection matches the
+    table's charset; without it a four-byte character round-trips as mojibake.
+    """
+    import pymysql  # lazy: only needed when MariaDB is actually selected
+
+    host = os.environ["DNSGUARD_DB_HOST"]
+    port = int(os.environ.get("DNSGUARD_DB_PORT", "3306"))
+    name = os.environ.get("DNSGUARD_DB_NAME", "dnsguard")
+    user = os.environ.get("DNSGUARD_DB_USER", "")
+    password = os.environ.get("DNSGUARD_DB_PASSWORD", "")
+
+    def connect() -> Any:
+        return pymysql.connect(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=name,
+            charset="utf8mb4",
+        )
+
+    return SqlDocumentStore(connect, dialect=MARIADB)
 
 
 # ── the app ──────────────────────────────────────────────────────────────────
