@@ -12,6 +12,14 @@ import ipaddress
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+# Largest range expanded into individual targets: an IPv4 /16.
+MAX_RANGE_ADDRESSES = 65_536
+URL_SCHEMES = ("http", "https")
+
+
+class TargetError(ValueError):
+    """A target was refused. The message is written for the operator."""
+
 
 @dataclass(frozen=True)
 class Target:
@@ -27,14 +35,30 @@ def _classify(token: str) -> list[Target]:
 
     # URL (has a scheme)
     if "://" in token:
-        parsed = urlparse(token)
+        try:
+            parsed = urlparse(token)
+        except ValueError as exc:
+            raise TargetError(f"unparseable URL: {token!r}") from exc
+        if parsed.scheme not in URL_SCHEMES:  # urlparse lowercases the scheme
+            raise TargetError(f"unsupported URL scheme in {token!r}: use http:// or https://")
         if not parsed.hostname:
-            raise ValueError(f"unparseable URL: {token!r}")
+            raise TargetError(f"unparseable URL: {token!r}")
         return [Target(raw=token, kind="url", value=token)]
 
     # CIDR -> expand to host IPs
     if "/" in token:
-        net = ipaddress.ip_network(token, strict=False)
+        try:
+            net = ipaddress.ip_network(token, strict=False)
+        except ValueError as exc:
+            raise TargetError(
+                f"invalid network range {token!r}: for a web address, include http:// or https://"
+            ) from exc
+        # Checked before expanding: hosts() on a large range never finishes.
+        if net.num_addresses > MAX_RANGE_ADDRESSES:
+            raise TargetError(
+                f"range {token!r} is too large: {net.num_addresses} addresses, "
+                f"limit {MAX_RANGE_ADDRESSES}; split the range into smaller ones"
+            )
         return [Target(raw=token, kind="ip", value=str(ip)) for ip in net.hosts()]
 
     # Bare IP

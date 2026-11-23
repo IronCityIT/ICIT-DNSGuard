@@ -28,7 +28,7 @@ for path in (str(ROOT), str(ROOT / "module_framework")):
 
 import registry  # noqa: E402
 from base import AssetSink  # noqa: E402
-from targets import parse_targets  # noqa: E402
+from targets import TargetError, parse_targets  # noqa: E402
 
 from dnsguard.report import build, make_scan_id  # noqa: E402
 
@@ -84,7 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         print("--domain is required", file=sys.stderr)
         return 2
 
-    targets = parse_targets([args.domain])
+    try:
+        targets = parse_targets([args.domain])
+    except TargetError as exc:
+        print(f"target error: {exc}", file=sys.stderr)
+        return 2
     if not targets:
         print(f"no usable target in {args.domain!r}", file=sys.stderr)
         return 2

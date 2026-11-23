@@ -37,7 +37,7 @@ for _path in (str(_HERE), str(_HERE.parent)):
 
 import registry  # noqa: E402
 from base import AssetSink  # noqa: E402
-from targets import parse_targets  # noqa: E402
+from targets import TargetError, parse_targets  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,7 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    targets = parse_targets(args.targets, args.targets_file)
+    try:
+        targets = parse_targets(args.targets, args.targets_file)
+    except TargetError as e:
+        print(f"target error: {e}", file=sys.stderr)
+        return 2
     if not targets:
         print("no valid targets", file=sys.stderr)
         return 2

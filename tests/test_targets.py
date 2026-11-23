@@ -4,7 +4,7 @@ shape a client types and normalise them into one classified list."""
 from __future__ import annotations
 
 import pytest
-from targets import parse_targets
+from targets import TargetError, parse_targets
 
 
 def kinds(values):
@@ -46,3 +46,39 @@ def test_file_input_strips_comments_and_blanks(tmp_path):
 def test_malformed_url_is_rejected():
     with pytest.raises(ValueError):
         parse_targets(["https:///nohost"])
+
+
+def test_path_without_a_scheme_is_rejected_by_name():
+    with pytest.raises(TargetError, match="example.com/login"):
+        parse_targets(["example.com/login"])
+
+
+@pytest.mark.parametrize("token", ["10.0.0.0/8", "192.0.0.0/15", "2001:db8::/64"])
+def test_oversized_range_is_rejected_before_it_is_expanded(token):
+    with pytest.raises(TargetError, match="split the range") as excinfo:
+        parse_targets([token])
+    assert token in str(excinfo.value)
+
+
+def test_largest_allowed_range_is_accepted():
+    parsed = kinds(["192.0.0.0/16"])
+    assert len(parsed) == 65_534
+    assert parsed[0] == ("ip", "192.0.0.1")
+    assert parsed[-1] == ("ip", "192.0.255.254")
+
+
+@pytest.mark.parametrize("token", ["file://localhost/etc/passwd", "ftp://example.com/x"])
+def test_non_web_url_scheme_is_rejected(token):
+    with pytest.raises(TargetError, match="http") as excinfo:
+        parse_targets([token])
+    assert token in str(excinfo.value)
+
+
+def test_url_scheme_is_case_insensitive_and_value_is_unchanged():
+    assert kinds(["HTTPS://example.com"]) == [("url", "HTTPS://example.com")]
+
+
+@pytest.mark.parametrize("token", ["https:///nohost", "http://[::1"])
+def test_unparseable_url_is_a_target_error(token):
+    with pytest.raises(TargetError):
+        parse_targets([token])

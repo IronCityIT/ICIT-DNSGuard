@@ -358,6 +358,18 @@ def test_a_missing_domain_is_refused():
     assert run_scan("--dry-run").returncode == 2
 
 
+@pytest.mark.parametrize(
+    "token", ["example.com/login", "10.0.0.0/8", "file://localhost/etc/passwd", "https:///nohost"]
+)
+def test_a_bad_target_is_reported_in_one_line(token):
+    proc = run_scan("--domain", token, "--dry-run")
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("target error: ")
+    assert token in proc.stderr
+    assert len(proc.stderr.splitlines()) == 1
+
+
 @pytest.mark.parametrize("group", ["quick", "standard", "deep", "email", "surface"])
 def test_every_advertised_group_resolves(group):
     proc = run_scan("--domain", "example.com", "--group", group, "--dry-run")

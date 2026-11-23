@@ -102,3 +102,15 @@ def test_cli_dry_run_touches_no_network():
 def test_cli_rejects_empty_target_set():
     proc = _cli("--group", "quick", "--targets", ",,")
     assert proc.returncode == 2
+
+
+@pytest.mark.parametrize(
+    "token", ["example.com/login", "10.0.0.0/8", "file://localhost/etc/passwd", "https:///nohost"]
+)
+def test_cli_reports_a_bad_target_in_one_line(token):
+    proc = _cli("--dry-run", "--group", "quick", "--targets", token)
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert proc.stderr.startswith("target error: ")
+    assert token in proc.stderr
+    assert len(proc.stderr.splitlines()) == 1
