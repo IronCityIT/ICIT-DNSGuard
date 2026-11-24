@@ -77,6 +77,20 @@ def host_of(target: Any) -> str:
     return value.lower().rstrip(".")
 
 
+def _text(rdata: Any) -> str:
+    """One answer as text.
+
+    A TXT value over 255 bytes is published as several strings, which RFC 7208
+    section 3.3 says to join with nothing in between. The presentation form is
+    `"part one" "part two"`, so stripping outer quotes from that would leave
+    `" "` in the middle of the value.
+    """
+    strings = getattr(rdata, "strings", None)
+    if strings is not None and getattr(rdata, "rdtype", None) == dns.rdatatype.TXT:
+        return b"".join(strings).decode("utf-8", errors="replace")
+    return str(rdata).strip('"')
+
+
 def query(res: dns.resolver.Resolver, name: str, rtype: str) -> list[str]:
     """Return record values as strings, or [] when the record does not exist.
 
@@ -88,7 +102,7 @@ def query(res: dns.resolver.Resolver, name: str, rtype: str) -> list[str]:
         answers = res.resolve(name, rtype)
     except Exception:
         return []
-    return [str(r).strip('"') for r in answers]
+    return [_text(r) for r in answers]
 
 
 def query_ttl(res: dns.resolver.Resolver, name: str, rtype: str) -> tuple[list[str], int]:
@@ -97,7 +111,7 @@ def query_ttl(res: dns.resolver.Resolver, name: str, rtype: str) -> tuple[list[s
     except Exception:
         return [], 0
     ttl = int(getattr(answers.rrset, "ttl", 0) or 0)
-    return [str(r).strip('"') for r in answers], ttl
+    return [_text(r) for r in answers], ttl
 
 
 def txt_records(res: dns.resolver.Resolver, name: str) -> list[str]:
@@ -140,7 +154,7 @@ def resolution(res: dns.resolver.Resolver, name: str, rtype: str = "A") -> tuple
         # SERVFAIL, timeouts, a lame delegation: unknown, and deliberately not
         # folded into nxdomain. Guessing here invents takeovers that do not exist.
         return "error", []
-    return "ok", [str(r).strip('"') for r in answers]
+    return "ok", [_text(r) for r in answers]
 
 
 def zone_apex(res: dns.resolver.Resolver, name: str) -> str:
