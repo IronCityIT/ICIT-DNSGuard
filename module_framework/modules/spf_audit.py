@@ -16,6 +16,13 @@ from ._dns import find_txt, host_of, make_resolver
 # over budget, which is the failure mode this check exists to catch.
 _LOOKUP_MECHANISMS = frozenset({"include", "a", "mx", "ptr", "exists"})
 _QUALIFIERS = "+-~?"
+_STRENGTHS = {
+    "-all": "hard fail",
+    "~all": "soft fail",
+    "?all": "neutral",
+    "+all": "pass all",
+    "": "unspecified",
+}
 
 
 def count_lookups(record: str) -> int:
@@ -32,29 +39,32 @@ def count_lookups(record: str) -> int:
     return total
 
 
+def find_all_mechanism(record: str) -> str:
+    """The record's effective all-mechanism with its qualifier, or "" if it has none.
+
+    Matched as a whole token: "-all" also occurs inside hostnames such as
+    include:spf-all.example.net. The first one wins because evaluation is left to
+    right and stops at a match, and a missing qualifier means "+" (RFC 7208
+    sections 4.6.2 and 5.1).
+    """
+    # A record published as several TXT strings is rendered with the inner quotes
+    # kept; the strings join with no space (RFC 7208 section 3.3).
+    joined = re.sub(r'"\s+"', "", record)
+    for term in joined.lower().split():
+        if term == "all":
+            return "+all"
+        if term in _STRENGTHS:
+            return term
+    return ""
+
+
 def parse_spf(record: str) -> dict[str, Any]:
     """Pure parse of an SPF record. No network access — unit-testable on its own."""
-    lowered = record.lower()
-    if "-all" in lowered:
-        qualifier = "-all"
-        strength = "hard fail"
-    elif "~all" in lowered:
-        qualifier = "~all"
-        strength = "soft fail"
-    elif "?all" in lowered:
-        qualifier = "?all"
-        strength = "neutral"
-    elif "+all" in lowered:
-        qualifier = "+all"
-        strength = "pass all"
-    else:
-        qualifier = ""
-        strength = "unspecified"
-
+    qualifier = find_all_mechanism(record)
     return {
         "record": record,
         "qualifier": qualifier,
-        "strength": strength,
+        "strength": _STRENGTHS[qualifier],
         "lookup_count": count_lookups(record),
         "includes": re.findall(r"include:([^\s]+)", record, flags=re.IGNORECASE),
     }
@@ -103,10 +113,10 @@ class SpfAudit(ScanModule):
                     target=host,
                     severity="critical",
                     title="Sender policy authorises every server on the internet",
-                    detail="The SPF record ends in +all, which explicitly permits any host to send mail as this domain.",
+                    detail="The SPF record's all-mechanism is +all (a bare all means the same), which permits any host to send mail as this domain.",
                     evidence={
                         **parsed,
-                        "remediation": "Replace +all with -all and enumerate your real senders.",
+                        "remediation": "Replace +all (or a bare all) with -all and enumerate your real senders.",
                     },
                 )
             )

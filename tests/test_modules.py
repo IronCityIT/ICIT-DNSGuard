@@ -97,6 +97,73 @@ def test_spf_strict_record_reports_info_only(monkeypatch):
     assert severities(findings) == ["info"]
 
 
+@pytest.mark.parametrize(
+    ("record", "qualifier", "strength"),
+    [
+        # "-all" inside a hostname is not a policy: each of these was read as hard fail.
+        ("v=spf1 include:spf-all.example.net +all", "+all", "pass all"),
+        ("v=spf1 include:spf-all.example.net ?all", "?all", "neutral"),
+        ("v=spf1 include:spf-all.example.net ~all", "~all", "soft fail"),
+        ("v=spf1 include:spf-all.example.net", "", "unspecified"),
+        # No qualifier means "+" (RFC 7208 section 4.6.2).
+        ("v=spf1 ip4:192.0.2.1 all", "+all", "pass all"),
+        ("v=spf1 ip4:192.0.2.1 ALL", "+all", "pass all"),
+        ("v=spf1 mx -ALL", "-all", "hard fail"),
+        # Evaluated left to right; everything after the first match is ignored.
+        ("v=spf1 +all -all", "+all", "pass all"),
+        ("v=spf1 -all +all", "-all", "hard fail"),
+        ("v=spf1 all:example.net allow.example.net", "", "unspecified"),
+    ],
+)
+def test_parse_spf_reads_the_all_mechanism_by_token(record, qualifier, strength):
+    parsed = parse_spf(record)
+    assert parsed["qualifier"] == qualifier
+    assert parsed["strength"] == strength
+
+
+@pytest.mark.parametrize(
+    ("record", "qualifier"),
+    [
+        # A record published as several TXT strings keeps the inner quotes when the
+        # resolver renders it. The strings join with no space (RFC 7208 section 3.3).
+        ('v=spf1 mx " "-all', "-all"),
+        ('v=spf1 mx " "+all', "+all"),
+        ('v=spf1 mx" " -all', "-all"),
+        ('v=spf1 mx -a" "ll', "-all"),
+        ('v=spf1 include:spf" "-all.example.net +all', "+all"),
+    ],
+)
+def test_parse_spf_reads_the_policy_of_a_record_split_across_strings(record, qualifier):
+    assert parse_spf(record)["qualifier"] == qualifier
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "v=spf1 include:spf-all.example.net +all",
+        "v=spf1 ip4:192.0.2.1 all",
+        "v=spf1 +all -all",
+    ],
+)
+def test_spf_open_record_is_critical_and_never_enforcing(monkeypatch, record):
+    monkeypatch.setattr(spf_audit, "find_txt", lambda *a, **k: record)
+    monkeypatch.setattr(spf_audit, "make_resolver", lambda *a, **k: object())
+    findings = spf_audit.SpfAudit().run(one("example.com"), {})
+    assert severities(findings) == ["critical"]
+    assert not any("is enforcing" in t for t in titles(findings))
+    # The record need not literally end in "+all", so the text must not say it does.
+    assert "ends in" not in findings[0].detail
+
+
+def test_spf_neutral_record_naming_an_all_like_host_is_medium(monkeypatch):
+    record = "v=spf1 include:spf-all.example.net ?all"
+    monkeypatch.setattr(spf_audit, "find_txt", lambda *a, **k: record)
+    monkeypatch.setattr(spf_audit, "make_resolver", lambda *a, **k: object())
+    findings = spf_audit.SpfAudit().run(one("example.com"), {})
+    assert severities(findings) == ["medium"]
+    assert "?all (neutral)" in findings[0].detail
+
+
 # ── DMARC ────────────────────────────────────────────────────────────────────
 
 
