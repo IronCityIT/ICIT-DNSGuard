@@ -28,6 +28,12 @@ It is the same mistake the DNSSEC module made and had corrected: reporting a
 mechanism as working because one visible half of it is present. Here, unusually,
 the half that is easy to see is the half that decides nothing.
 
+## Why this module looks up MX
+
+In enforce mode a sender refuses any mail server the policy does not list, so a
+policy that omits a live MX loses mail rather than protecting it. Enforcement is
+only good news once the policy has been compared with the servers it governs.
+
 The fetch is injected (`ctx["http"]`), so no test touches the network.
 """
 
@@ -37,7 +43,7 @@ from typing import Any
 
 from base import Finding, ScanModule
 
-from ._dns import find_txt, host_of, make_resolver
+from ._dns import find_txt, host_of, make_resolver, resolution
 
 POLICY_PATH = "/.well-known/mta-sts.txt"
 
@@ -96,6 +102,29 @@ def fetch_policy(session: Any, host: str) -> tuple[str, str]:
     return "ok", body[:MAX_POLICY_BYTES]
 
 
+def mx_hosts(res: Any, host: str) -> list[str]:
+    """The domain's mail servers, normalised for comparison.
+
+    Empty means there is nothing to compare a policy with — the lookup failed,
+    there is no MX, or the domain publishes a null MX (RFC 7505) — and callers
+    must not read it as a mismatch.
+    """
+    _status, records = resolution(res, host, "MX")
+    names = [record.split()[-1].rstrip(".").lower() for record in records if record.strip()]
+    return [name for name in names if name]
+
+
+def mx_listed(mx_host: str, patterns: list[str]) -> bool:
+    """Does the policy permit this (normalised) mail server? RFC 8461 §4.1.
+
+    A leading `*.` stands for exactly one left-most label, as in a certificate;
+    it is not a suffix match.
+    """
+    parent = mx_host.partition(".")[2]
+    permitted = {mx_host, f"*.{parent}"} if parent else {mx_host}
+    return any(pattern.rstrip(".").lower() in permitted for pattern in patterns)
+
+
 def _default_session() -> Any:
     import requests
 
@@ -123,7 +152,7 @@ class TransportSecurityAudit(ScanModule):
         tls_rpt = find_txt(res, f"_smtp._tls.{host}", "v=TLSRPTv1")
 
         findings: list[Finding] = []
-        findings.extend(self._mta_sts(host, mta_sts, ctx))
+        findings.extend(self._mta_sts(host, mta_sts, ctx, res))
         if not tls_rpt:
             findings.append(
                 Finding(
@@ -139,9 +168,17 @@ class TransportSecurityAudit(ScanModule):
                     remediation="Publish a _smtp._tls TXT record pointing at a monitored mailbox.",
                 )
             )
+
+        # The client report's mta_sts and tls_rpt flags are read from here.
+        # Published is not the same as working: only `_mta_sts` can mark the
+        # policy as in force, and everything else leaves it without credit.
+        in_force = any(f.evidence.get("mta_sts") for f in findings)
+        for finding in findings:
+            finding.evidence["mta_sts"] = in_force
+            finding.evidence["tls_rpt"] = bool(tls_rpt)
         return findings
 
-    def _mta_sts(self, host: str, record: str, ctx: dict[str, Any]) -> list[Finding]:
+    def _mta_sts(self, host: str, record: str, ctx: dict[str, Any], res: Any) -> list[Finding]:
         if not record:
             return [
                 Finding(
@@ -273,20 +310,86 @@ class TransportSecurityAudit(ScanModule):
                 )
             ]
 
-        findings = [
-            Finding(
-                module=self.name,
-                target=host,
-                severity="info",
-                category="email",
-                title="Encrypted mail transport is enforced",
-                detail=(
-                    "An MTA-STS policy is published in mode: enforce, so a sender that cannot "
-                    "negotiate authenticated TLS to a listed host will not deliver at all."
-                ),
-                evidence=evidence,
+        patterns = [pattern for pattern in policy["mx"] if pattern.strip(".")]
+        hosts = mx_hosts(res, host)
+        unlisted = [name for name in hosts if not mx_listed(name, patterns)]
+        evidence["mx_hosts"] = hosts
+        evidence["mx_unlisted"] = unlisted
+
+        if not patterns:
+            return [
+                Finding(
+                    module=self.name,
+                    target=host,
+                    severity="medium",
+                    category="email",
+                    title="The MTA-STS policy lists no mail servers",
+                    detail=(
+                        "The policy is in mode: enforce but has no mx line, which makes it "
+                        "invalid. A sender that cannot use the policy applies none of it, so "
+                        "encrypted transport is not enforced."
+                    ),
+                    remediation=(
+                        "Add an mx line to the policy file for every mail server that receives "
+                        "mail for this domain, then change the id in the _mta-sts record."
+                    ),
+                    evidence=evidence,
+                )
+            ]
+
+        # No hosts means coverage could not be checked, which is not a mismatch.
+        in_force = not hosts or len(unlisted) < len(hosts)
+        evidence["mta_sts"] = in_force
+
+        findings = []
+        if in_force:
+            findings.append(
+                Finding(
+                    module=self.name,
+                    target=host,
+                    severity="info",
+                    category="email",
+                    title="Encrypted mail transport is enforced",
+                    detail=(
+                        "An MTA-STS policy is published in mode: enforce, so a sender that cannot "
+                        "negotiate authenticated TLS to a listed host will not deliver at all."
+                    ),
+                    evidence=evidence,
+                )
             )
-        ]
+
+        if unlisted:
+            names = ", ".join(unlisted)
+            findings.append(
+                Finding(
+                    module=self.name,
+                    target=host,
+                    severity="medium" if in_force else "high",
+                    category="email",
+                    title=(
+                        "The MTA-STS policy omits some of the domain's mail servers"
+                        if in_force
+                        else "The MTA-STS policy omits all of the domain's mail servers"
+                    ),
+                    detail=(
+                        f"The policy is in mode: enforce but does not list {names}. Senders that "
+                        "honour the policy refuse to deliver to a server it does not list, so "
+                        + (
+                            "mail is delayed or lost whenever it is routed there."
+                            if in_force
+                            else "they cannot deliver mail to this domain at all."
+                        )
+                    ),
+                    remediation=(
+                        f"Add an mx line to the policy file for {names}, or remove the MX records "
+                        "that are no longer in use, then change the id in the _mta-sts record so "
+                        "senders fetch the corrected policy."
+                    ),
+                    evidence=evidence,
+                    # Partial becoming total is the same problem getting worse.
+                    key="mta-sts-mx-coverage",
+                )
+            )
 
         max_age = str(policy.get("max_age", "")).strip()
         if max_age.isdigit() and int(max_age) < SHORT_MAX_AGE:
