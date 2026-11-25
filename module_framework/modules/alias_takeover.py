@@ -290,17 +290,24 @@ class AliasTakeover(ScanModule):
         else:
             session = ctx.get("http") or _default_session()
             found_names = {f"{label}.{root}" for label in PROBE_NAMES}
+            ct_names: set[str] = set()
             coverage = {
                 "probe_names": len(PROBE_NAMES),
                 "certificate_transparency": "not requested",
             }
             if ctx.get("use_certificate_transparency", True):
-                found, status = _crtsh_names(session, root)
-                found_names |= found
+                ct_names, status = _crtsh_names(session, root)
+                found_names |= ct_names
                 coverage["certificate_transparency"] = status
-                coverage["certificate_transparency_names"] = len(found)
+                coverage["certificate_transparency_names"] = len(ct_names)
             names = sorted(found_names)
-            ctx["alias_candidates"] = {"root": root, "names": names, "coverage": coverage}
+            ctx["alias_candidates"] = {
+                "root": root,
+                "names": names,
+                "coverage": coverage,
+                # Not used here: discovery needs to know which names were not guesses.
+                "ct_names": sorted(ct_names),
+            }
 
         def alias_of(fqdn: str) -> tuple[str, str] | None:
             targets = query(res, fqdn, "CNAME")
