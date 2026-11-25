@@ -8,6 +8,7 @@ rather than listing every host as a problem.
 
 from __future__ import annotations
 
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -99,6 +100,10 @@ SENSITIVE_NAMES = frozenset(
 
 LARGE_SURFACE = 50
 
+#: How many names that cannot exist are looked up to see whether the domain has
+#: wildcard DNS. More than one, because a wildcard may rotate between addresses.
+WILDCARD_CONTROLS = 3
+
 
 def coverage_is_full(coverage: dict[str, Any]) -> bool:
     """Did discovery see everything it was asked to see?
@@ -152,6 +157,10 @@ def _crtsh_names(session: Any, domain: str, timeout: float = 15.0) -> tuple[set[
     return names, "ok"
 
 
+def _normalised(values: list[str]) -> set[str]:
+    return {value.lower().rstrip(".") for value in values}
+
+
 class SubdomainDiscovery(ScanModule):
     name = "subdomain_discovery"
     description = (
@@ -175,21 +184,24 @@ class SubdomainDiscovery(ScanModule):
         if isinstance(cached, dict) and cached.get("root") == host:
             candidates = set(cached["names"])
             coverage = cached["coverage"]
+            ct_names = set(cached.get("ct_names", ()))
         else:
+            ct_names = set()
             candidates = {f"{name}.{host}" for name in PROBE_NAMES}
             coverage = {
                 "probe_names": len(PROBE_NAMES),
                 "certificate_transparency": "not requested",
             }
             if ctx.get("use_certificate_transparency", True):
-                found, status = _crtsh_names(session, host)
-                candidates |= found
+                ct_names, status = _crtsh_names(session, host)
+                candidates |= ct_names
                 coverage["certificate_transparency"] = status
-                coverage["certificate_transparency_names"] = len(found)
+                coverage["certificate_transparency_names"] = len(ct_names)
             ctx["alias_candidates"] = {
                 "root": host,
                 "names": sorted(candidates),
                 "coverage": coverage,
+                "ct_names": sorted(ct_names),
             }
 
         def resolve(fqdn: str) -> dict[str, Any] | None:
@@ -208,8 +220,32 @@ class SubdomainDiscovery(ScanModule):
                 "label": label,
             }
 
+        # Names that cannot exist. If any of them answers, the domain has wildcard
+        # DNS and an answer for a guessed name proves nothing on its own.
+        controls = [
+            f"dnsguard-control-{secrets.token_hex(6)}.{host}" for _ in range(WILDCARD_CONTROLS)
+        ]
         with ThreadPoolExecutor(max_workers=int(ctx.get("workers", 10))) as pool:
+            wildcard = [r for r in pool.map(resolve, controls) if r]
             live = [r for r in pool.map(resolve, sorted(candidates)) if r]
+
+        # A name that is only a guess, and whose answer is only the wildcard's, is
+        # not a host we found. A name in certificate transparency is not a guess,
+        # so it stays whatever it resolves to.
+        indistinguishable = 0
+        if wildcard:
+            wild_addresses = {a for r in wildcard for a in _normalised(r["addresses"])}
+            wild_aliases = {a for r in wildcard for a in _normalised(r["aliases"])}
+            guessed = {f"{name}.{host}" for name in PROBE_NAMES} - ct_names
+            resolved = len(live)
+            live = [
+                r
+                for r in live
+                if r["host"] not in guessed
+                or not _normalised(r["addresses"]) <= wild_addresses
+                or not _normalised(r["aliases"]) <= wild_aliases
+            ]
+            indistinguishable = resolved - len(live)
 
         # The inventory is a deliverable, not a by-product of findings: a client
         # asking "what of ours is on the internet" should not have to have it
@@ -278,18 +314,52 @@ class SubdomainDiscovery(ScanModule):
                 )
             )
 
+        if indistinguishable:
+            findings.append(
+                Finding(
+                    module=self.name,
+                    target=host,
+                    severity="info",
+                    category="dns",
+                    title="Wildcard DNS is in use",
+                    detail=(
+                        f"{host} answers for names that do not exist. {indistinguishable} guessed "
+                        "name(s) could not be told apart from that wildcard, so they are not "
+                        "reported as hosts. A real host sharing the wildcard's address would not "
+                        "be distinguishable from it, so this is not a clean result: any of those "
+                        "names may or may not be a real system."
+                    ),
+                    remediation=(
+                        f"Review the records published in the {host} zone for administrative and "
+                        "non-production hosts, and remove the wildcard if nothing depends on it."
+                    ),
+                    evidence={"indistinguishable_names": indistinguishable},
+                    confidence="inconclusive",
+                )
+            )
+
+        detail = (
+            f"{len(live)} host(s) resolve under {host}, from {len(candidates)} name(s) "
+            + coverage_note(coverage)
+        )
+        if indistinguishable:
+            detail += (
+                f" {indistinguishable} guessed name(s) that could not be told apart from the "
+                "domain's wildcard DNS are not counted."
+            )
         findings.append(
             Finding(
                 module=self.name,
                 target=host,
                 severity="info",
                 title="Public host inventory collected",
-                detail=(
-                    f"{len(live)} host(s) resolve under {host}, from {len(candidates)} name(s) "
-                    + coverage_note(coverage)
-                ),
+                detail=detail,
                 evidence={"hosts": live, "coverage": coverage},
-                confidence="confirmed" if coverage_is_full(coverage) else "possible",
+                # An inventory that had to leave names undecided is not the same
+                # claim as a complete one.
+                confidence="confirmed"
+                if coverage_is_full(coverage) and not indistinguishable
+                else "possible",
             )
         )
         return findings
