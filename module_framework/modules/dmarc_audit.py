@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from typing import Any
 
@@ -10,6 +11,10 @@ from base import Finding, ScanModule
 from ._dns import find_txt, host_of, make_resolver
 
 POLICIES = ("none", "quarantine", "reject")
+
+#: Most names asked for one host, its own included. A hostile or malformed target
+#: with a hundred labels must not become a hundred lookups.
+MAX_LOOKUPS = 8
 
 
 def parse_dmarc(record: str) -> dict[str, Any]:
@@ -30,6 +35,21 @@ def parse_dmarc(record: str) -> dict[str, Any]:
     }
 
 
+def candidate_domains(host: str) -> list[str]:
+    """The host, then each parent in turn, nearest first. Never a bare TLD.
+
+    An IP address has octets, not labels, so it has no parents.
+    """
+    name = host.rstrip(".")
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        labels = name.split(".")
+        parents = [".".join(labels[cut:]) for cut in range(1, len(labels) - 1)]
+        return [name, *parents][:MAX_LOOKUPS]
+    return [name]
+
+
 class DmarcAudit(ScanModule):
     name = "dmarc_audit"
     description = "Checks whether the domain tells receivers what to do with unauthenticated mail, and whether it is enforced."
@@ -41,7 +61,14 @@ class DmarcAudit(ScanModule):
         if not host:
             return []
         res = make_resolver(ctx.get("nameservers"))
-        record = find_txt(res, f"_dmarc.{host}", "v=dmarc1")
+        record = source = ""
+        inherited = False
+        for depth, domain in enumerate(candidate_domains(host)):
+            source = f"_dmarc.{domain}"
+            inherited = depth > 0
+            record = find_txt(res, source, "v=dmarc1")
+            if record:
+                break
 
         if not record:
             return [
@@ -63,20 +90,35 @@ class DmarcAudit(ScanModule):
             ]
 
         parsed = parse_dmarc(record)
+        # An inherited record governs this host through sp, or through p when sp
+        # is missing or unrecognised. `policy` carries whichever applies here, so
+        # everything reading it sees what receivers actually do for this host.
+        tag = "p"
+        if inherited and parsed["subdomain_policy"] in POLICIES:
+            tag = "sp"
+            parsed["policy"] = parsed["subdomain_policy"]
+        parsed["policy_source"] = source
+        parsed["inherited"] = inherited
+        policy = f"{tag}={parsed['policy']}"
+        origin = f", inherited from the record at {source}" if inherited else ""
+
         findings: list[Finding] = []
 
         if parsed["policy"] == "none":
+            remediation = "Move to p=quarantine, then p=reject, once reports confirm your legitimate senders pass."
+            if inherited:
+                remediation = (
+                    f"Set sp=quarantine, then sp=reject, on the record at {source}, or publish a "
+                    "separate record for this host, once reports confirm your legitimate senders pass."
+                )
             findings.append(
                 Finding(
                     module=self.name,
                     target=host,
                     severity="medium",
                     title="Mail authentication policy is monitor-only",
-                    detail="The policy is p=none, so mail that fails authentication is still delivered. Spoofed mail reaches recipients.",
-                    evidence={
-                        **parsed,
-                        "remediation": "Move to p=quarantine, then p=reject, once reports confirm your legitimate senders pass.",
-                    },
+                    detail=f"The policy is {policy}{origin}, so mail that fails authentication is still delivered. Spoofed mail reaches recipients.",
+                    evidence={**parsed, "remediation": remediation},
                 )
             )
         elif parsed["pct"] < 100:
@@ -90,6 +132,25 @@ class DmarcAudit(ScanModule):
                     evidence={
                         **parsed,
                         "remediation": "Raise pct to 100 once the partial rollout looks clean.",
+                    },
+                )
+            )
+
+        if not inherited and parsed["policy"] != "none" and parsed["subdomain_policy"] == "none":
+            findings.append(
+                Finding(
+                    module=self.name,
+                    target=host,
+                    severity="medium",
+                    title="Subdomains are exempt from the mail authentication policy",
+                    detail=(
+                        f"This domain is protected with p={parsed['policy']}, but sp=none exempts its "
+                        "subdomains. Mail forged as any subdomain without its own record is still "
+                        "delivered, including subdomains that do not exist."
+                    ),
+                    evidence={
+                        **parsed,
+                        "remediation": "Remove sp=none so subdomains follow the main policy, or set sp=quarantine, then sp=reject, once reports confirm mail from your subdomains passes.",
                     },
                 )
             )
@@ -116,7 +177,7 @@ class DmarcAudit(ScanModule):
                     target=host,
                     severity="info",
                     title="Mail authentication policy is enforcing",
-                    detail=f"DMARC is published with p={parsed['policy']} at {parsed['pct']}% and reports to {len(parsed['rua'])} address(es).",
+                    detail=f"DMARC is published with {policy}{origin} at {parsed['pct']}% and reports to {len(parsed['rua'])} address(es).",
                     evidence=parsed,
                 )
             )
