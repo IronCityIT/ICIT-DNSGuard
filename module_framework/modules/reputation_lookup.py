@@ -41,7 +41,9 @@ class ReputationLookup(ScanModule):
 
     def run(self, target: Any, ctx: dict[str, Any]) -> list[Finding]:
         session = ctx.get("http") or _session()
-        providers = _configured(ctx)
+        # Only providers that can return a verdict count. A key for anything else
+        # (ipstack is geolocation, not reputation) must not make the run look checked.
+        providers = {name: key for name, key in _configured(ctx).items() if name in _VERDICT}
 
         if not providers:
             return [
@@ -59,12 +61,16 @@ class ReputationLookup(ScanModule):
             ]
 
         kind = getattr(target, "kind", "domain")
+        not_checked = 0
         if kind == "ip":
             host = str(getattr(target, "value", target))
             addresses = [host]
         else:
             host = host_of(target)
-            addresses = query(make_resolver(ctx.get("nameservers")), host, "A")[:MAX_ADDRESSES]
+            res = make_resolver(ctx.get("nameservers"))
+            addresses, not_checked = _cap_addresses(
+                query(res, host, "A"), query(res, host, "AAAA"), MAX_ADDRESSES
+            )
 
         findings: list[Finding] = []
         verdicts: list[dict[str, Any]] = []
@@ -79,8 +85,6 @@ class ReputationLookup(ScanModule):
 
         for address in addresses:
             for provider, key in providers.items():
-                if provider == "ipstack":
-                    continue
                 lookup = _VERDICT[provider]
                 verdict = lookup(session, key, address)
                 if verdict.get("consulted"):
@@ -123,21 +127,70 @@ class ReputationLookup(ScanModule):
                 )
             )
 
+        evidence: dict[str, Any] = {
+            "verdicts": verdicts,
+            "addresses": addresses,
+            "providers_configured": sorted(providers),
+        }
+        skipped = ""
+        if not_checked:
+            evidence["addresses_not_checked"] = not_checked
+            skipped = f" {not_checked} further address(es) were not checked."
+
+        if not verdicts:
+            # Every provider failed, or the only configured provider is address-based
+            # and the host has no addresses. Nothing answered, so nothing is "checked".
+            evidence["consulted"] = False
+            findings.append(
+                Finding(
+                    module=self.name,
+                    target=host,
+                    severity="info",
+                    title="Reputation could not be checked",
+                    detail=(
+                        f"No reputation verdict came back for this domain or its "
+                        f"{len(addresses)} address(es). This is not a clean result — it is "
+                        f"an unchecked one.{skipped}"
+                    ),
+                    evidence=evidence,
+                )
+            )
+            return findings
+
         findings.append(
             Finding(
                 module=self.name,
                 target=host,
                 severity="info",
                 title="Reputation checked",
-                detail=f"{len(verdicts)} verdict(s) collected across {len(addresses)} address(es).",
-                evidence={
-                    "verdicts": verdicts,
-                    "addresses": addresses,
-                    "providers_configured": sorted(providers),
-                },
+                detail=(
+                    f"{len(verdicts)} verdict(s) collected across {len(addresses)} "
+                    f"address(es).{skipped}"
+                ),
+                evidence=evidence,
             )
         )
         return findings
+
+
+def _cap_addresses(ipv4: list[str], ipv6: list[str], cap: int) -> tuple[list[str], int]:
+    """Merge A and AAAA answers, deduplicated, IPv4 first, at most `cap` in total.
+
+    When both families are present, the first address of each is always kept so
+    an over-the-cap IPv4 list cannot crowd IPv6 out. Returns the addresses to
+    check, in a stable order, and how many were dropped.
+    """
+    merged = list(dict.fromkeys([*ipv4, *ipv6]))
+    if len(merged) <= cap:
+        return merged, 0
+    v6_only = [a for a in merged if a not in ipv4]
+    keep = {family[0] for family in (ipv4, v6_only) if family}
+    for address in merged:
+        if len(keep) >= cap:
+            break
+        keep.add(address)
+    selected = [a for a in merged if a in keep]
+    return selected, len(merged) - len(selected)
 
 
 # ── providers ────────────────────────────────────────────────────────────────
