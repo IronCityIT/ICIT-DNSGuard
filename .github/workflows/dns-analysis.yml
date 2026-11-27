@@ -300,17 +300,31 @@ jobs:
           if-no-files-found: ignore
 
   # AI analysis is delegated to the shared engine and never re-implemented here.
+  #
+  # Pinned to a commit, not @main: on a moving branch any change to the engine's
+  # contract reached this pipeline unreviewed. The inputs and secrets below are
+  # checked against tests/fixtures/consensus_engine_contract.json, a snapshot of
+  # the engine's workflow_call block at this same commit — move the pin and the
+  # snapshot together (tests/test_consensus_contract.py fails otherwise).
   ai-consensus:
     name: AI Consensus Analysis
     needs: analyze
     if: needs.analyze.outputs.has_findings == 'true'
-    uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@main
+    # consensus-engine main, 2026-08-28: "analyze: default post_to_api to false" (#5)
+    uses: IronCityIT/consensus-engine/.github/workflows/analyze.yml@0a293eebf21922e7c98b022e25508e6977ce7ff3
     with:
       findings_json: ${{ needs.analyze.outputs.findings_b64 }}
       scan_id: ${{ needs.analyze.outputs.scan_id }}
       client_id: ${{ needs.analyze.outputs.client_id }}
       product: dnsguard
-    secrets: inherit
+    # Named, never `inherit`: inherit handed the engine every secret this repo
+    # holds — threat-intel keys and the store URL included — when it declares
+    # only these. IRONCITY_API_KEY is declared too but is used only when
+    # post_to_api is true, which this caller leaves at its default of false.
+    secrets:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
   # Firestore is the store of record. Previously the workflow POSTed the report
   # to the QNAP Flask API and NEVER wrote to Firestore, so the document the

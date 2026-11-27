@@ -1,0 +1,59 @@
+{
+  "source": {
+    "repository": "IronCityIT/consensus-engine",
+    "path": ".github/workflows/analyze.yml",
+    "ref": "main",
+    "commit": "0a293eebf21922e7c98b022e25508e6977ce7ff3",
+    "commit_date": "2026-08-28T21:02:45-04:00",
+    "commit_subject": "analyze: default post_to_api to false, the ingest API is update-only (#5)"
+  },
+  "inputs": {
+    "findings_json": {
+      "required": false,
+      "type": "string",
+      "default": ""
+    },
+    "product": {
+      "required": false,
+      "type": "string",
+      "default": "generic"
+    },
+    "client_id": {
+      "required": false,
+      "type": "string",
+      "default": "default"
+    },
+    "scan_id": {
+      "required": false,
+      "type": "string",
+      "default": ""
+    },
+    "api_url": {
+      "required": false,
+      "type": "string",
+      "default": "https://api.ironcityit.com/ingest"
+    },
+    "post_to_api": {
+      "required": false,
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "secrets": {
+    "GROQ_API_KEY": {
+      "required": false
+    },
+    "OPENROUTER_API_KEY": {
+      "required": false
+    },
+    "GEMINI_API_KEY": {
+      "required": false
+    },
+    "IRONCITY_API_KEY": {
+      "required": false
+    }
+  },
+  "outputs": [
+    "consensus_b64"
+  ]
+}
