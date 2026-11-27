@@ -444,3 +444,36 @@ CI and stop the state drifting away from the claim again. The reason it exists
 is that this repository confidently documented a production security boundary,
 and was wrong about it for two weeks, in the direction that made the exposure
 look smaller than it was.
+
+---
+
+# consensus-engine call vs. its declared contract (2026-11-27)
+
+Read from `IronCityIT/consensus-engine` `.github/workflows/analyze.yml` at
+origin/main `0a293eebf21922e7c98b022e25508e6977ce7ff3` (2026-08-28, #5). Not
+assumed; the snapshot is `tests/fixtures/consensus_engine_contract.json`.
+
+| Contract | Declared | `ai-consensus` job passed | Result |
+|---|---|---|---|
+| inputs (all optional) | `findings_json`, `product`, `client_id`, `scan_id`, `api_url`, `post_to_api` | `findings_json`, `scan_id`, `client_id`, `product` | match |
+| secrets (all optional) | `GROQ_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `IRONCITY_API_KEY` | `secrets: inherit` | **mismatch**: every repo secret went to the engine |
+| outputs | `consensus_b64` | none read (`needs.ai-consensus.result` only) | match |
+| ref | n/a | `@main` | **moving branch** |
+
+Fixed in the caller only: pinned to the SHA above; `inherit` replaced by the three
+provider keys. `IRONCITY_API_KEY` is not passed, because the engine uses it only
+when `post_to_api` is true and this caller leaves it false. The engine does not
+declare `target` or `client_name`, so passing the standard names would be an
+undeclared input. Only `scan_id` overlaps, and it is already passed.
+`tests/test_consensus_contract.py` now fails on any drift.
+
+Open, for consensus-engine's own review (REVIEW ONLY, not changed here):
+
+* The engine's `actions/checkout` names `repository: IronCityIT/consensus-engine`
+  with no `ref`, so it fetches the engine's **default branch**. The pin fixes the
+  workflow definition, but `src/consensus_engine.py` still floats with main.
+  The engine would have to check out the commit its caller pinned, for example
+  from an explicit `ref` input, for the pin to cover the code too.
+* The store job also depends on the engine's artifact name,
+  `consensus-result-<scan_id>`, which is not part of `workflow_call`. The test
+  does not cover it.
