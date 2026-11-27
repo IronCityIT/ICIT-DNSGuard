@@ -337,11 +337,11 @@ reading a comparison that spans a deploy.
 | `DNSGUARD_API_ACTOR` | `dnsguard/identity.py` | Who the audit chain records for that credential. |
 | `DNSGUARD_LINK_SECRET` | `dnsguard/api.py` → `dnsguard/links.py` | HMAC key for signed scan links. Absent → minting and public reads both answer 503; nothing is signed or accepted. |
 | `DNSGUARD_DATA_DIR` | `dnsguard/api.py`, Dockerfile | Root for `JsonFileStore`. Unset → in-memory store. |
-| `DNSGUARD_DB_HOST` | `dnsguard/api.py` | Set → store is MariaDB (`SqlDocumentStore`, PyMySQL). **Wins over `DNSGUARD_DATA_DIR`.** Unset → file/in-memory as before. |
-| `DNSGUARD_DB_PORT` | `dnsguard/api.py` | MariaDB port. Defaults to `3306`. |
-| `DNSGUARD_DB_NAME` | `dnsguard/api.py` | Database name. Defaults to `dnsguard`. |
-| `DNSGUARD_DB_USER` | `dnsguard/api.py` | Least-privilege user, scoped to that one database. |
-| `DNSGUARD_DB_PASSWORD` | `dnsguard/api.py` | Password for that user. A discrete variable, never a DSN, so metacharacters need no escaping. |
+| `DNSGUARD_DB_HOST` | `dnsguard/api.py` | Set → store is MariaDB (`SqlDocumentStore`, PyMySQL). **Wins over `DNSGUARD_DATA_DIR`.** Unset → file/in-memory as before. **Fails closed:** once set, a bad port, an empty/unset user, password or name, a missing driver, or a database unreachable at start-up (the idempotent schema DDL runs then) stops the process with a `RuntimeError` naming the variable — never its value, the host or the driver's message (driver class and error number only). It never falls back to another store. |
+| `DNSGUARD_DB_PORT` | `dnsguard/api.py` | MariaDB port, `1`–`65535`. Defaults to `3306`. |
+| `DNSGUARD_DB_NAME` | `dnsguard/api.py` | Database name. Defaults to `dnsguard` when unset; set-but-empty is an error. |
+| `DNSGUARD_DB_USER` | `dnsguard/api.py` | Least-privilege user, scoped to that one database. Required. |
+| `DNSGUARD_DB_PASSWORD` | `dnsguard/api.py` | Password for that user. Required. A discrete variable, never a DSN, so metacharacters need no escaping. |
 | `DNSGUARD_FETCH_FEEDS` | `dnsguard/api.py` | `1/true/yes` wires the HTTP feed fetcher. Off → maintenance reports feeds as "not attempted" rather than healthy. |
 
 CLI flags of note: `tools/scan.py --nameservers` (resolvers that report NXDOMAIN
