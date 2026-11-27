@@ -45,7 +45,13 @@ from .approvals import ACTION_RISK, ApprovalGate, classify
 from .audit import AuditLog
 from .clock import Clock
 from .compliance import assess, coverage
-from .errors import ApprovalRequiredError, DnsGuardError, TenantIsolationError, ValidationError
+from .errors import (
+    ApprovalRequiredError,
+    DnsGuardError,
+    StorageError,
+    TenantIsolationError,
+    ValidationError,
+)
 from .evidence import EvidenceExporter
 from .exceptions_policy import ExceptionService
 from .feeds import FeedFetcher, FeedRegistry
@@ -295,14 +301,44 @@ def _mariadb_store() -> DocumentStore:
     The password travels as a discrete variable, never a DSN, so a value with URL
     metacharacters needs no escaping. utf8mb4 on the connection matches the
     table's charset; without it a four-byte character round-trips as mojibake.
-    """
-    import pymysql  # lazy: only needed when MariaDB is actually selected
 
+    Fails closed. Setting DNSGUARD_DB_HOST is a decision to use the database, so
+    a bad port, a missing user/password/name, an absent driver or a database
+    that cannot be reached raises `RuntimeError` and the process does not start
+    — it never quietly falls back to the file or in-memory store. Every message
+    names the *variable*, never its value, and the driver's own exception is
+    not chained: its text carries the host and user, and start-up tracebacks
+    land in container logs. The driver's class and error number are kept, which
+    is enough to tell refused (2003) from bad login (1045) from no database (1049).
+
+    The schema is created here, at start-up: `SqlDocumentStore` does so by
+    default and `create_schema` is documented as idempotent and safe on every
+    start. That is also what makes an unreachable database a start-up failure
+    rather than a 503 on the first request.
+    """
     host = os.environ["DNSGUARD_DB_HOST"]
-    port = int(os.environ.get("DNSGUARD_DB_PORT", "3306"))
+    port_text = os.environ.get("DNSGUARD_DB_PORT", "3306")
+    # isascii(): str.isdigit() also accepts digits such as "³" that int() rejects.
+    port = int(port_text) if port_text.isascii() and port_text.isdigit() else 0
+    if not 1 <= port <= 65535:
+        raise RuntimeError("DNSGUARD_DB_PORT must be an integer between 1 and 65535")
     name = os.environ.get("DNSGUARD_DB_NAME", "dnsguard")
     user = os.environ.get("DNSGUARD_DB_USER", "")
     password = os.environ.get("DNSGUARD_DB_PASSWORD", "")
+    for variable, value in (
+        ("DNSGUARD_DB_NAME", name),
+        ("DNSGUARD_DB_USER", user),
+        ("DNSGUARD_DB_PASSWORD", password),
+    ):
+        if not value:
+            raise RuntimeError(f"DNSGUARD_DB_HOST is set but {variable} is empty or unset")
+
+    try:
+        import pymysql  # lazy: only needed when MariaDB is actually selected
+    except ImportError:
+        raise RuntimeError(
+            "DNSGUARD_DB_HOST is set but the MariaDB driver (PyMySQL) is not installed"
+        ) from None
 
     def connect() -> Any:
         return pymysql.connect(
@@ -314,7 +350,17 @@ def _mariadb_store() -> DocumentStore:
             charset="utf8mb4",
         )
 
-    return SqlDocumentStore(connect, dialect=MARIADB)
+    try:
+        return SqlDocumentStore(connect, dialect=MARIADB)
+    except StorageError as exc:
+        cause = exc.__cause__
+        code = cause.args[0] if cause is not None and cause.args else None
+        detail = type(cause).__name__ if cause is not None else type(exc).__name__
+        if isinstance(code, int):
+            detail = f"{detail} {code}"
+        raise RuntimeError(
+            f"could not open the database configured by DNSGUARD_DB_* ({detail})"
+        ) from None
 
 
 # ── the app ──────────────────────────────────────────────────────────────────
